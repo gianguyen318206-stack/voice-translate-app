@@ -174,16 +174,25 @@ document.addEventListener('DOMContentLoaded', () => {
         return voice || null;
     }
 
-    // iOS ONLY: called inside user gesture to unlock audio channel
-    function primeAudioForIOS(langFullCode) {
-        if (!isIOS || !('speechSynthesis' in window)) return;
+    // iOS ONLY: unlock audio channel inside user gesture,
+    // then call onDone() after primer finishes so mic can start safely.
+    // iOS cannot record mic AND play audio at the same time,
+    // so we MUST wait for primer to END before starting recognition.
+    function primeAudioForIOS(langFullCode, onDone) {
+        if (!isIOS || !('speechSynthesis' in window)) {
+            if (onDone) onDone();
+            return;
+        }
         window.speechSynthesis.cancel();
         const primer = new SpeechSynthesisUtterance('.');
         primer.volume = 0.01;
-        primer.rate = 10;
+        primer.rate = 10; // super fast, done in ~100ms
         primer.lang = langFullCode;
         const voice = findBestVoice(langFullCode);
         if (voice) primer.voice = voice;
+        // Start recognition ONLY after primer finishes
+        primer.onend = () => { if (onDone) onDone(); };
+        primer.onerror = () => { if (onDone) onDone(); }; // failsafe
         window.speechSynthesis.speak(primer);
     }
 
@@ -289,7 +298,19 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
-        recognition.onerror = () => resetRecordingState();
+        recognition.onerror = (event) => {
+            const errorMessages = {
+                'no-speech':          'Không nghe thấy giọng nói, thử lại nhé!',
+                'audio-capture':      'Không truy cập được micro',
+                'not-allowed':        'Hãy cho phép truy cập micro trong cài đặt',
+                'network':            'Lỗi mạng, kiểm tra kết nối internet',
+                'aborted':            '',
+                'service-not-allowed':'Trình duyệt không hỗ trợ thu âm'
+            };
+            const msg = errorMessages[event.error] || `Lỗi: ${event.error}`;
+            if (msg) showStatus(msg, true);
+            resetRecordingState();
+        };
         recognition.onend = () => resetRecordingState();
     }
 
@@ -300,21 +321,30 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const startListening = (mode) => {
-        if (!recognition) { alert("Trình duyệt không hỗ trợ thu âm."); return; }
+        if (!recognition) {
+            showStatus('Trình duyệt không hỗ trợ thu âm', true);
+            return;
+        }
         if (btnA.classList.contains('active') || btnB.classList.contains('active')) {
-            recognition.stop(); return;
+            recognition.stop();
+            return;
         }
         currentMode = mode;
         recognition.lang = mode === 'A' ? langA.value : langB.value;
 
-        // iOS only: prime audio channel inside this user gesture.
-        // Chrome does NOT need this and works fine from async.
         if (isIOS) {
+            // iOS FIX: prime audio FIRST (inside user gesture),
+            // then start recognition AFTER primer finishes.
+            // They CANNOT run at the same time (mic vs speaker conflict).
             const targetLang = mode === 'A' ? langB.value : langA.value;
-            primeAudioForIOS(targetLang);
+            showStatus('Đang chuẩn bị...');
+            primeAudioForIOS(targetLang, () => {
+                try { recognition.start(); } catch(e) {}
+            });
+        } else {
+            // Chrome/Android: no priming needed, start directly
+            try { recognition.start(); } catch(e) {}
         }
-
-        try { recognition.start(); } catch(e) {}
     };
 
     btnA.addEventListener('click', () => startListening('A'));
