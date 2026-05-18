@@ -223,6 +223,9 @@ document.addEventListener('DOMContentLoaded', () => {
         return chunks.filter(c => c.length > 0);
     }
 
+    // Global audio element to bypass iOS autoplay restrictions
+    const googleTTSAudio = new Audio();
+
     // Play via Google Translate TTS (better quality, natural female voice)
     function playGoogleTTS(text, langCode) {
         return new Promise((resolve, reject) => {
@@ -231,10 +234,10 @@ document.addEventListener('DOMContentLoaded', () => {
             function next() {
                 if (i >= chunks.length) { showStatus('Sẵn sàng'); resolve(); return; }
                 const url = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${langCode}&q=${encodeURIComponent(chunks[i])}`;
-                const audio = new Audio(url);
-                audio.onended = () => { i++; next(); };
-                audio.onerror = () => reject(new Error('Google TTS fail'));
-                audio.play().catch(reject);
+                googleTTSAudio.src = url;
+                googleTTSAudio.onended = () => { i++; next(); };
+                googleTTSAudio.onerror = () => reject(new Error('Google TTS fail'));
+                googleTTSAudio.play().catch(reject);
             }
             next();
         });
@@ -291,16 +294,13 @@ document.addEventListener('DOMContentLoaded', () => {
         showStatus('Đang phát âm...');
         const langCode = langFullCode.split('-')[0];
 
-        if (isIOS) {
-            // iOS: audio channel primed in startListening() — use speechSynthesis
-            // iOS has good built-in voices (like 'Linh' for vi-VN)
-            doSpeakSynthesis(text, langFullCode);
-        } else {
-            // Chrome/Android: Use Google TTS for ALL languages (best quality + natural female voice)
-            // Fallback to speechSynthesis if Google TTS fails
-            playGoogleTTS(text, langCode)
-                .catch(() => doSpeakSynthesis(text, langFullCode));
-        }
+        // Use Google TTS universally for the best human-like female voice
+        // (iOS is now supported because we prime googleTTSAudio on click)
+        playGoogleTTS(text, langCode)
+            .catch(() => {
+                // Fallback to synthesis only if Google TTS completely fails
+                doSpeakSynthesis(text, langFullCode);
+            });
     }
 
     // iOS ONLY: unlock audio channel inside user gesture,
@@ -406,7 +406,11 @@ document.addEventListener('DOMContentLoaded', () => {
         recognition.lang = mode === 'A' ? langA.value : langB.value;
 
         if (isIOS) {
-            // iOS FIX: prime audio FIRST (inside user gesture),
+            // Prime global Audio so Google TTS can play asynchronously later
+            googleTTSAudio.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+            googleTTSAudio.play().catch(()=>{});
+
+            // iOS FIX: prime speechSynthesis FIRST (inside user gesture),
             // then start recognition AFTER primer finishes.
             // They CANNOT run at the same time (mic vs speaker conflict).
             const targetLang = mode === 'A' ? langB.value : langA.value;
