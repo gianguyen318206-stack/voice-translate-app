@@ -164,7 +164,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Prefer female voice for natural sound
+    // Prefer female and premium/enhanced voices for natural, emotional sound
     function findBestVoice(langFullCode) {
         if (!availableVoices.length) loadVoices();
         const short = langFullCode.split('-')[0];
@@ -175,20 +175,35 @@ document.addEventListener('DOMContentLoaded', () => {
         );
         if (langVoices.length === 0) return null;
 
-        // Keywords for female voices (Vietnamese + general)
+        // Keywords for female voices
         const femaleHints = ['linh', 'an', 'mai', 'lan', 'huong', 'female',
                              'woman', 'girl', 'zira', 'hazel', 'samantha',
                              'susan', 'kate', 'fiona', 'heera', 'neerja'];
         const maleHints   = ['male', 'man', 'david', 'mark', 'daniel',
                              'nam', 'tung', 'hung', 'jorge', 'diego'];
+        
+        // Keywords for high quality/expressive voices
+        const premiumHints = ['premium', 'enhanced', 'natural', 'online', 'neural'];
 
-        const femaleVoice = langVoices.find(v => {
+        // Score voices to find the best match
+        let bestVoice = langVoices[0];
+        let highestScore = -1;
+
+        langVoices.forEach(v => {
+            let score = 0;
             const name = v.name.toLowerCase();
-            return femaleHints.some(h => name.includes(h)) &&
-                  !maleHints.some(h => name.includes(h));
+            
+            if (femaleHints.some(h => name.includes(h))) score += 10;
+            if (maleHints.some(h => name.includes(h))) score -= 10;
+            if (premiumHints.some(h => name.includes(h))) score += 5; // Bonus for high quality
+
+            if (score > highestScore) {
+                highestScore = score;
+                bestVoice = v;
+            }
         });
 
-        return femaleVoice || langVoices[0];
+        return bestVoice;
     }
 
     function splitTextToChunks(text, maxLen) {
@@ -245,8 +260,8 @@ document.addEventListener('DOMContentLoaded', () => {
             chunks.forEach((chunk) => {
                 const utterance = new SpeechSynthesisUtterance(chunk);
                 utterance.lang    = langFullCode;
-                utterance.rate    = 0.95;
-                utterance.pitch   = 1.1;  // slightly higher = more feminine
+                utterance.rate    = 1.0;  // 1.0 is most natural
+                utterance.pitch   = 1.0;  // 1.0 allows built-in emotion to shine
                 utterance.volume  = 1.0;
                 const voice = findBestVoice(langFullCode);
                 if (voice) utterance.voice = voice;
