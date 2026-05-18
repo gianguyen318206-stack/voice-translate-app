@@ -164,20 +164,117 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Prefer female voice for natural sound
     function findBestVoice(langFullCode) {
         if (!availableVoices.length) loadVoices();
-        let voice = availableVoices.find(v => v.lang === langFullCode);
-        if (!voice) {
-            const short = langFullCode.split('-')[0];
-            voice = availableVoices.find(v => v.lang.startsWith(short));
+        const short = langFullCode.split('-')[0];
+
+        // Get all voices for this language
+        const langVoices = availableVoices.filter(v =>
+            v.lang === langFullCode || v.lang.startsWith(short)
+        );
+        if (langVoices.length === 0) return null;
+
+        // Keywords for female voices (Vietnamese + general)
+        const femaleHints = ['linh', 'an', 'mai', 'lan', 'huong', 'female',
+                             'woman', 'girl', 'zira', 'hazel', 'samantha',
+                             'susan', 'kate', 'fiona', 'heera', 'neerja'];
+        const maleHints   = ['male', 'man', 'david', 'mark', 'daniel',
+                             'nam', 'tung', 'hung', 'jorge', 'diego'];
+
+        const femaleVoice = langVoices.find(v => {
+            const name = v.name.toLowerCase();
+            return femaleHints.some(h => name.includes(h)) &&
+                  !maleHints.some(h => name.includes(h));
+        });
+
+        return femaleVoice || langVoices[0];
+    }
+
+    // Play via Google Translate TTS (better quality, natural female voice)
+    function playGoogleTTS(text, langCode) {
+        return new Promise((resolve, reject) => {
+            // chunk at 200 chars
+            const maxLen = 200;
+            const chunks = [];
+            let rem = text;
+            while (rem.length > 0) {
+                if (rem.length <= maxLen) { chunks.push(rem); break; }
+                let cut = rem.lastIndexOf('.', maxLen);
+                if (cut < maxLen / 2) cut = rem.lastIndexOf(' ', maxLen);
+                if (cut < maxLen / 2) cut = maxLen;
+                chunks.push(rem.substring(0, cut + 1));
+                rem = rem.substring(cut + 1).trim();
+            }
+            let i = 0;
+            function next() {
+                if (i >= chunks.length) { showStatus('Sẵn sàng'); resolve(); return; }
+                const url = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${langCode}&q=${encodeURIComponent(chunks[i])}`;
+                const audio = new Audio(url);
+                audio.onended = () => { i++; next(); };
+                audio.onerror = () => reject(new Error('Google TTS fail'));
+                audio.play().catch(reject);
+            }
+            next();
+        });
+    }
+
+    // Play via speechSynthesis (iOS + fallback)
+    function doSpeakSynthesis(text, langFullCode) {
+        if (!('speechSynthesis' in window)) { showStatus('Sẵn sàng'); return; }
+        window.speechSynthesis.cancel();
+        const delay = isIOS ? 200 : 0;
+        setTimeout(() => {
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang    = langFullCode;
+            utterance.rate    = 0.95;
+            utterance.pitch   = 1.1;  // slightly higher = more feminine
+            utterance.volume  = 1.0;
+            const voice = findBestVoice(langFullCode);
+            if (voice) utterance.voice = voice;
+
+            // Android Chrome 15s keep-alive
+            const keepAlive = setInterval(() => {
+                if (!window.speechSynthesis.speaking) clearInterval(keepAlive);
+                else { window.speechSynthesis.pause(); window.speechSynthesis.resume(); }
+            }, 10000);
+
+            utterance.onend = () => { clearInterval(keepAlive); showStatus('Sẵn sàng'); };
+            utterance.onerror = (e) => {
+                clearInterval(keepAlive);
+                if (e.error !== 'interrupted' && e.error !== 'canceled')
+                    showStatus('Sẵn sàng');
+            };
+            window.speechSynthesis.speak(utterance);
+        }, delay);
+    }
+
+    function playAudio(text, langFullCode) {
+        if (!text) return;
+        showStatus('Đang phát âm...');
+        const langCode = langFullCode.split('-')[0];
+
+        if (isIOS) {
+            // iOS: audio channel primed in startListening() — use speechSynthesis
+            // iOS has 'Linh' (female, vi-VN) built-in
+            doSpeakSynthesis(text, langFullCode);
+        } else {
+            // Chrome/Android: Google TTS for Vietnamese (best quality + female voice)
+            // speechSynthesis for all other languages
+            waitForVoices().then(() => {
+                if (langCode === 'vi') {
+                    playGoogleTTS(text, langCode)
+                        .catch(() => doSpeakSynthesis(text, langFullCode));
+                } else {
+                    doSpeakSynthesis(text, langFullCode);
+                }
+            });
         }
-        return voice || null;
     }
 
     // iOS ONLY: unlock audio channel inside user gesture,
-    // then call onDone() after primer finishes so mic can start safely.
-    // iOS cannot record mic AND play audio at the same time,
-    // so we MUST wait for primer to END before starting recognition.
+    // then call onDone() AFTER primer finishes so mic can start safely.
+    // iOS cannot record mic AND play audio at the same time!
     function primeAudioForIOS(langFullCode, onDone) {
         if (!isIOS || !('speechSynthesis' in window)) {
             if (onDone) onDone();
@@ -186,68 +283,13 @@ document.addEventListener('DOMContentLoaded', () => {
         window.speechSynthesis.cancel();
         const primer = new SpeechSynthesisUtterance('.');
         primer.volume = 0.01;
-        primer.rate = 10; // super fast, done in ~100ms
-        primer.lang = langFullCode;
+        primer.rate   = 10; // super fast ~100ms
+        primer.lang   = langFullCode;
         const voice = findBestVoice(langFullCode);
         if (voice) primer.voice = voice;
-        // Start recognition ONLY after primer finishes
-        primer.onend = () => { if (onDone) onDone(); };
+        primer.onend  = () => { if (onDone) onDone(); };
         primer.onerror = () => { if (onDone) onDone(); }; // failsafe
         window.speechSynthesis.speak(primer);
-    }
-
-    function doSpeak(text, langFullCode) {
-        if (!('speechSynthesis' in window)) return;
-        window.speechSynthesis.cancel();
-
-        // iOS needs a longer delay after cancel + primer
-        // Chrome works fine with 0ms
-        const delay = isIOS ? 200 : 0;
-
-        setTimeout(() => {
-            const utterance = new SpeechSynthesisUtterance(text);
-            utterance.lang = langFullCode;
-            utterance.rate = 1.0;
-            utterance.pitch = 1.0;
-            utterance.volume = 1.0;
-
-            const voice = findBestVoice(langFullCode);
-            if (voice) utterance.voice = voice;
-
-            // Android Chrome 15s keep-alive bug fix
-            const keepAlive = setInterval(() => {
-                if (!window.speechSynthesis.speaking) {
-                    clearInterval(keepAlive);
-                } else {
-                    window.speechSynthesis.pause();
-                    window.speechSynthesis.resume();
-                }
-            }, 10000);
-
-            utterance.onend = () => { clearInterval(keepAlive); showStatus('Sẵn sàng'); };
-            utterance.onerror = (e) => {
-                clearInterval(keepAlive);
-                if (e.error !== 'interrupted' && e.error !== 'canceled') {
-                    console.warn('TTS error:', e.error);
-                    showStatus('Sẵn sàng');
-                }
-            };
-
-            window.speechSynthesis.speak(utterance);
-        }, delay);
-    }
-
-    function playAudio(text, langFullCode) {
-        if (!text || !('speechSynthesis' in window)) return;
-        showStatus('Đang phát âm...');
-
-        if (isIOS) {
-            // iOS: audio channel already primed in startListening(), just speak now
-            doSpeak(text, langFullCode);
-        } else {
-            // Chrome/others: wait for voices then speak
-            waitForVoices().then(() => doSpeak(text, langFullCode));
-        }
     }
 
     // --- GHI ÂM (VOICE) ---
