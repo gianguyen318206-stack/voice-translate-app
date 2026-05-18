@@ -131,18 +131,17 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // =====================================================
-    // iOS AUDIO FIX
-    // iOS Safari BLOCKS audio from async callbacks.
-    // The ONLY way to play audio on iOS is to call
-    // speechSynthesis.speak() directly inside a user gesture.
-    //
-    // Strategy:
-    // 1. On button press (gesture), immediately speak a
-    //    blank/placeholder utterance to "open" the audio channel.
-    // 2. Store a pending utterance reference.
-    // 3. After translation, cancel the placeholder and speak real text.
+    // CROSS-BROWSER AUDIO ENGINE
+    // - iOS Safari: must call speak() inside user gesture
+    //   → use "primer" technique to unlock audio channel
+    // - Chrome (desktop/Android): works from async context
+    //   → wait for voices to load, then speak normally
     // =====================================================
 
+    // Detect iOS
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+
+    // Voice management (Chrome Android loads voices async)
     let availableVoices = [];
     function loadVoices() {
         if ('speechSynthesis' in window) {
@@ -152,6 +151,17 @@ document.addEventListener('DOMContentLoaded', () => {
     loadVoices();
     if ('speechSynthesis' in window) {
         window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+
+    // Wait until voice list is populated (needed on Chrome Android)
+    function waitForVoices() {
+        return new Promise(resolve => {
+            loadVoices();
+            if (availableVoices.length > 0) { resolve(); return; }
+            const onChanged = () => { loadVoices(); resolve(); };
+            window.speechSynthesis.addEventListener('voiceschanged', onChanged, { once: true });
+            setTimeout(resolve, 1500); // fallback timeout
+        });
     }
 
     function findBestVoice(langFullCode) {
@@ -164,34 +174,27 @@ document.addEventListener('DOMContentLoaded', () => {
         return voice || null;
     }
 
-    // Holds text+lang to speak after translation is done
-    let pendingSpeech = null;
-
-    // Called INSIDE user gesture to open iOS audio channel
+    // iOS ONLY: called inside user gesture to unlock audio channel
     function primeAudioForIOS(langFullCode) {
-        if (!('speechSynthesis' in window)) return;
-        // Cancel any previous
+        if (!isIOS || !('speechSynthesis' in window)) return;
         window.speechSynthesis.cancel();
-        // Speak a near-silent utterance to unlock iOS audio session
         const primer = new SpeechSynthesisUtterance('.');
         primer.volume = 0.01;
-        primer.rate = 10; // Very fast so it ends almost immediately
+        primer.rate = 10;
         primer.lang = langFullCode;
         const voice = findBestVoice(langFullCode);
         if (voice) primer.voice = voice;
         window.speechSynthesis.speak(primer);
     }
 
-    function playAudio(text, langFullCode) {
-        if (!text) return;
+    function doSpeak(text, langFullCode) {
         if (!('speechSynthesis' in window)) return;
-
-        showStatus('Đang phát âm...');
-
-        // Cancel primer/anything playing
         window.speechSynthesis.cancel();
 
-        // Small delay to let cancel settle (iOS needs this)
+        // iOS needs a longer delay after cancel + primer
+        // Chrome works fine with 0ms
+        const delay = isIOS ? 200 : 0;
+
         setTimeout(() => {
             const utterance = new SpeechSynthesisUtterance(text);
             utterance.lang = langFullCode;
@@ -202,17 +205,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const voice = findBestVoice(langFullCode);
             if (voice) utterance.voice = voice;
 
-            utterance.onend = () => showStatus('Sẵn sàng');
-            utterance.onerror = (e) => {
-                if (e.error !== 'interrupted' && e.error !== 'canceled') {
-                    console.warn('TTS error:', e.error);
-                    showStatus('Sẵn sàng');
-                }
-            };
-
-            window.speechSynthesis.speak(utterance);
-
-            // Android keep-alive: speechSynthesis stops after ~15s
+            // Android Chrome 15s keep-alive bug fix
             const keepAlive = setInterval(() => {
                 if (!window.speechSynthesis.speaking) {
                     clearInterval(keepAlive);
@@ -221,14 +214,31 @@ document.addEventListener('DOMContentLoaded', () => {
                     window.speechSynthesis.resume();
                 }
             }, 10000);
+
             utterance.onend = () => { clearInterval(keepAlive); showStatus('Sẵn sàng'); };
             utterance.onerror = (e) => {
                 clearInterval(keepAlive);
                 if (e.error !== 'interrupted' && e.error !== 'canceled') {
+                    console.warn('TTS error:', e.error);
                     showStatus('Sẵn sàng');
                 }
             };
-        }, 150);
+
+            window.speechSynthesis.speak(utterance);
+        }, delay);
+    }
+
+    function playAudio(text, langFullCode) {
+        if (!text || !('speechSynthesis' in window)) return;
+        showStatus('Đang phát âm...');
+
+        if (isIOS) {
+            // iOS: audio channel already primed in startListening(), just speak now
+            doSpeak(text, langFullCode);
+        } else {
+            // Chrome/others: wait for voices then speak
+            waitForVoices().then(() => doSpeak(text, langFullCode));
+        }
     }
 
     // --- GHI ÂM (VOICE) ---
@@ -297,10 +307,12 @@ document.addEventListener('DOMContentLoaded', () => {
         currentMode = mode;
         recognition.lang = mode === 'A' ? langA.value : langB.value;
 
-        // iOS FIX: Prime audio channel RIGHT NOW while we are in user gesture context.
-        // This unlocks iOS Safari's audio restriction before the async translation happens.
-        const targetLang = mode === 'A' ? langB.value : langA.value;
-        primeAudioForIOS(targetLang);
+        // iOS only: prime audio channel inside this user gesture.
+        // Chrome does NOT need this and works fine from async.
+        if (isIOS) {
+            const targetLang = mode === 'A' ? langB.value : langA.value;
+            primeAudioForIOS(targetLang);
+        }
 
         try { recognition.start(); } catch(e) {}
     };
