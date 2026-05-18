@@ -191,21 +191,27 @@ document.addEventListener('DOMContentLoaded', () => {
         return femaleVoice || langVoices[0];
     }
 
+    function splitTextToChunks(text, maxLen) {
+        const chunks = [];
+        let rem = text;
+        while (rem.length > 0) {
+            if (rem.length <= maxLen) { chunks.push(rem); break; }
+            let cut = rem.lastIndexOf('.', maxLen);
+            if (cut < maxLen / 2) cut = rem.lastIndexOf(',', maxLen);
+            if (cut < maxLen / 2) cut = rem.lastIndexOf(' ', maxLen);
+            if (cut < maxLen / 2) cut = maxLen;
+            
+            let chunkLen = (cut === maxLen) ? maxLen : cut + 1;
+            chunks.push(rem.substring(0, chunkLen).trim());
+            rem = rem.substring(chunkLen).trim();
+        }
+        return chunks.filter(c => c.length > 0);
+    }
+
     // Play via Google Translate TTS (better quality, natural female voice)
     function playGoogleTTS(text, langCode) {
         return new Promise((resolve, reject) => {
-            // chunk at 200 chars
-            const maxLen = 200;
-            const chunks = [];
-            let rem = text;
-            while (rem.length > 0) {
-                if (rem.length <= maxLen) { chunks.push(rem); break; }
-                let cut = rem.lastIndexOf('.', maxLen);
-                if (cut < maxLen / 2) cut = rem.lastIndexOf(' ', maxLen);
-                if (cut < maxLen / 2) cut = maxLen;
-                chunks.push(rem.substring(0, cut + 1));
-                rem = rem.substring(cut + 1).trim();
-            }
+            const chunks = splitTextToChunks(text, 200);
             let i = 0;
             function next() {
                 if (i >= chunks.length) { showStatus('Sẵn sàng'); resolve(); return; }
@@ -224,28 +230,44 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!('speechSynthesis' in window)) { showStatus('Sẵn sàng'); return; }
         window.speechSynthesis.cancel();
         const delay = isIOS ? 200 : 0;
+        
+        const chunks = splitTextToChunks(text, 150); // smaller chunks for synthesis
+        
         setTimeout(() => {
-            const utterance = new SpeechSynthesisUtterance(text);
-            utterance.lang    = langFullCode;
-            utterance.rate    = 0.95;
-            utterance.pitch   = 1.1;  // slightly higher = more feminine
-            utterance.volume  = 1.0;
-            const voice = findBestVoice(langFullCode);
-            if (voice) utterance.voice = voice;
-
+            let chunksFinished = 0;
+            
             // Android Chrome 15s keep-alive
             const keepAlive = setInterval(() => {
                 if (!window.speechSynthesis.speaking) clearInterval(keepAlive);
                 else { window.speechSynthesis.pause(); window.speechSynthesis.resume(); }
             }, 10000);
 
-            utterance.onend = () => { clearInterval(keepAlive); showStatus('Sẵn sàng'); };
-            utterance.onerror = (e) => {
-                clearInterval(keepAlive);
-                if (e.error !== 'interrupted' && e.error !== 'canceled')
-                    showStatus('Sẵn sàng');
-            };
-            window.speechSynthesis.speak(utterance);
+            chunks.forEach((chunk) => {
+                const utterance = new SpeechSynthesisUtterance(chunk);
+                utterance.lang    = langFullCode;
+                utterance.rate    = 0.95;
+                utterance.pitch   = 1.1;  // slightly higher = more feminine
+                utterance.volume  = 1.0;
+                const voice = findBestVoice(langFullCode);
+                if (voice) utterance.voice = voice;
+
+                utterance.onend = () => {
+                    chunksFinished++;
+                    if (chunksFinished >= chunks.length) {
+                        clearInterval(keepAlive);
+                        showStatus('Sẵn sàng');
+                    }
+                };
+                utterance.onerror = (e) => {
+                    chunksFinished++;
+                    if (chunksFinished >= chunks.length) {
+                        clearInterval(keepAlive);
+                        if (e.error !== 'interrupted' && e.error !== 'canceled')
+                            showStatus('Sẵn sàng');
+                    }
+                };
+                window.speechSynthesis.speak(utterance);
+            });
         }, delay);
     }
 
