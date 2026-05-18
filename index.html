@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Máy Phiên Dịch Thông Minh</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- PWA Meta Tags -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#1e2124">
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/281/281759.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+</head>
+<body>
+    <div class="device-body">
+        <div class="device-speaker"></div>
+        <div class="device-screen">
+            <!-- Khu vực đối tác -->
+            <div class="screen-half partner-half" id="partner-area">
+                <div class="lang-header">
+                    <select id="lang-b">
+                        <option value="zh-CN" selected>中文 (Trung)</option>
+                        <option value="en-US">English (Anh)</option>
+                        <option value="ja-JP">日本語 (Nhật)</option>
+                        <option value="ko-KR">한국어 (Hàn)</option>
+                        <option value="th-TH">ไทย (Thái)</option>
+                        <option value="fr-FR">Français (Pháp)</option>
+                        <option value="es-ES">Español (Tây Ban Nha)</option>
+                        <option value="de-DE">Deutsch (Đức)</option>
+                        <option value="ru-RU">Русский (Nga)</option>
+                        <option value="pt-BR">Português (Bồ Đào Nha)</option>
+                        <option value="id-ID">Indonesia</option>
+                        <option value="vi-VN">Tiếng Việt</option>
+                    </select>
+                    <div>
+                        <button class="icon-btn flip-btn" title="Lật ngược" id="flip-btn"><i class="fa-solid fa-arrows-rotate"></i></button>
+                    </div>
+                </div>
+                <div class="text-display" id="text-b">Đối tác nói...</div>
+            </div>
+
+            <!-- Lớp vẽ Sóng Âm (Waveform) -->
+            <div class="waveform-container">
+                <canvas id="waveform"></canvas>
+            </div>
+
+            <!-- Khu vực người dùng -->
+            <div class="screen-half user-half">
+                <div class="text-display" id="text-a">Bạn nói...</div>
+                <div class="lang-header bottom-header">
+                    <select id="lang-a">
+                        <option value="vi-VN" selected>Tiếng Việt</option>
+                        <option value="en-US">English (Anh)</option>
+                        <option value="zh-CN">中文 (Trung)</option>
+                        <option value="ja-JP">日本語 (Nhật)</option>
+                        <option value="ko-KR">한국어 (Hàn)</option>
+                        <option value="th-TH">ไทย (Thái)</option>
+                        <option value="fr-FR">Français (Pháp)</option>
+                    </select>
+                    <div>
+                        <button class="icon-btn" title="Lịch sử trò chuyện" id="history-btn"><i class="fa-solid fa-clock-rotate-left"></i></button>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="status-indicator" class="status-indicator">Sẵn sàng</div>
+            
+            <!-- Modal Lịch sử -->
+            <div id="history-overlay" class="history-overlay">
+                <div class="history-header">
+                    <h3>Lịch sử hội thoại</h3>
+                    <button id="close-history" class="icon-btn"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="history-content" id="history-content">
+                    <div class="empty-hist">Chưa có hội thoại nào</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Thanh điều khiển thông minh hợp nhất -->
+        <div class="device-controls smart-bar">
+            <button id="btn-b" class="smart-btn partner-btn">
+                <i class="fa-solid fa-microphone"></i>
+                <span class="btn-label" id="label-b">Trung</span>
+            </button>
+            
+            <button id="btn-camera" class="camera-btn" title="Chụp dịch">
+                <i class="fa-solid fa-camera"></i>
+            </button>
+
+            <button id="btn-a" class="smart-btn user-btn">
+                <i class="fa-solid fa-microphone"></i>
+                <span class="btn-label" id="label-a">Việt</span>
+            </button>
+        </div>
+
+        <!-- Camera Overlay UI -->
+        <div id="camera-overlay" class="camera-overlay">
+            <video id="camera-feed" autoplay playsinline></video>
+            <canvas id="camera-canvas" style="display: none;"></canvas>
+            
+            <div class="camera-ui-top">
+                <button id="close-camera" class="icon-btn close-cam-btn">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+                <div class="camera-info">Hướng camera vào văn bản</div>
+            </div>
+
+            <div class="focus-box"></div>
+
+            <div class="camera-ui-bottom">
+                <button id="capture-btn" class="capture-btn">
+                    <div class="capture-inner"></div>
+                </button>
+            </div>
+            
+            <div id="ocr-status" class="ocr-status">
+                <i class="fa-solid fa-spinner fa-spin"></i>
+                <span>Đang quét...</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
