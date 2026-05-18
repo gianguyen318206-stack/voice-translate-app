@@ -130,167 +130,105 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    // --- MOBILE AUDIO FIX ---
-    // Unlock audio on first user touch (required by iOS/Android)
-    let audioUnlocked = false;
-    function unlockAudio() {
-        if (audioUnlocked) return;
-        // Unlock Web Audio API
-        if (audioCtx) {
-            audioCtx.resume();
-        }
-        // Unlock speechSynthesis on iOS by speaking empty utterance
-        if ('speechSynthesis' in window) {
-            const silent = new SpeechSynthesisUtterance('');
-            silent.volume = 0;
-            window.speechSynthesis.speak(silent);
-        }
-        // Unlock HTML5 Audio
-        try {
-            const silentAudio = new Audio("data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA/+M4wAAAAAAAAAAAAEluZm8AAAAPAAAAAwAAAbAAkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0P////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAABsOjeSf4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/+M4wAAAAANIAAAAAExBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV/+M4wDkAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV/+M4wHkAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV");
-            silentAudio.play().then(() => silentAudio.pause()).catch(() => {});
-        } catch(e) {}
-        audioUnlocked = true;
-    }
-    document.addEventListener('touchstart', unlockAudio, { once: true });
-    document.addEventListener('click', unlockAudio, { once: true });
+    // =====================================================
+    // iOS AUDIO FIX
+    // iOS Safari BLOCKS audio from async callbacks.
+    // The ONLY way to play audio on iOS is to call
+    // speechSynthesis.speak() directly inside a user gesture.
+    //
+    // Strategy:
+    // 1. On button press (gesture), immediately speak a
+    //    blank/placeholder utterance to "open" the audio channel.
+    // 2. Store a pending utterance reference.
+    // 3. After translation, cancel the placeholder and speak real text.
+    // =====================================================
 
-    // Pre-load voices (Android Chrome loads them async)
-    let voicesLoaded = false;
     let availableVoices = [];
     function loadVoices() {
-        availableVoices = window.speechSynthesis?.getVoices() || [];
-        if (availableVoices.length > 0) voicesLoaded = true;
+        if ('speechSynthesis' in window) {
+            availableVoices = window.speechSynthesis.getVoices();
+        }
     }
     loadVoices();
     if ('speechSynthesis' in window) {
         window.speechSynthesis.onvoiceschanged = loadVoices;
     }
 
-    function findBestVoice(langCode) {
+    function findBestVoice(langFullCode) {
         if (!availableVoices.length) loadVoices();
-        // Try exact match first
-        let voice = availableVoices.find(v => v.lang === langCode);
-        // Then try partial match (e.g., 'vi' matches 'vi-VN')
+        let voice = availableVoices.find(v => v.lang === langFullCode);
         if (!voice) {
-            const short = langCode.split('-')[0];
+            const short = langFullCode.split('-')[0];
             voice = availableVoices.find(v => v.lang.startsWith(short));
         }
         return voice || null;
     }
 
-    function speakWithSynthesis(text, langFullCode) {
-        return new Promise((resolve, reject) => {
-            if (!('speechSynthesis' in window)) {
-                reject(new Error('speechSynthesis not supported'));
-                return;
-            }
-            
-            // Cancel any ongoing speech
-            window.speechSynthesis.cancel();
-            
-            // Small delay after cancel to avoid bugs on mobile
-            setTimeout(() => {
-                const utterance = new SpeechSynthesisUtterance(text);
-                utterance.lang = langFullCode;
-                utterance.rate = 1.0;
-                utterance.pitch = 1.0;
-                utterance.volume = 1.0;
-                
-                const voice = findBestVoice(langFullCode);
-                if (voice) utterance.voice = voice;
-                
-                utterance.onend = () => resolve();
-                utterance.onerror = (e) => {
-                    // 'interrupted' and 'canceled' are not real errors
-                    if (e.error === 'interrupted' || e.error === 'canceled') {
-                        resolve();
-                    } else {
-                        reject(e);
-                    }
-                };
-                
-                window.speechSynthesis.speak(utterance);
-                
-                // Android Chrome bug: speechSynthesis stops after ~15s
-                // Keep it alive with a periodic resume
-                const keepAlive = setInterval(() => {
-                    if (!window.speechSynthesis.speaking) {
-                        clearInterval(keepAlive);
-                    } else {
-                        window.speechSynthesis.pause();
-                        window.speechSynthesis.resume();
-                    }
-                }, 10000);
-                
-                utterance.onend = () => {
-                    clearInterval(keepAlive);
-                    resolve();
-                };
-                utterance.onerror = (e) => {
-                    clearInterval(keepAlive);
-                    if (e.error === 'interrupted' || e.error === 'canceled') {
-                        resolve();
-                    } else {
-                        reject(e);
-                    }
-                };
-            }, 100);
-        });
+    // Holds text+lang to speak after translation is done
+    let pendingSpeech = null;
+
+    // Called INSIDE user gesture to open iOS audio channel
+    function primeAudioForIOS(langFullCode) {
+        if (!('speechSynthesis' in window)) return;
+        // Cancel any previous
+        window.speechSynthesis.cancel();
+        // Speak a near-silent utterance to unlock iOS audio session
+        const primer = new SpeechSynthesisUtterance('.');
+        primer.volume = 0.01;
+        primer.rate = 10; // Very fast so it ends almost immediately
+        primer.lang = langFullCode;
+        const voice = findBestVoice(langFullCode);
+        if (voice) primer.voice = voice;
+        window.speechSynthesis.speak(primer);
     }
 
-    function playGoogleTTS(text, langFullCode) {
-        return new Promise((resolve, reject) => {
-            const langCode = langFullCode.split('-')[0];
-            // Split long text into chunks of 200 chars (Google TTS limit)
-            const maxLen = 200;
-            const chunks = [];
-            let remaining = text;
-            while (remaining.length > 0) {
-                if (remaining.length <= maxLen) {
-                    chunks.push(remaining);
-                    break;
-                }
-                // Find a good break point
-                let breakAt = remaining.lastIndexOf('.', maxLen);
-                if (breakAt < maxLen / 2) breakAt = remaining.lastIndexOf(' ', maxLen);
-                if (breakAt < maxLen / 2) breakAt = maxLen;
-                chunks.push(remaining.substring(0, breakAt + 1));
-                remaining = remaining.substring(breakAt + 1).trim();
-            }
-            
-            let i = 0;
-            function playNext() {
-                if (i >= chunks.length) { resolve(); return; }
-                const url = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${langCode}&q=${encodeURIComponent(chunks[i])}`;
-                const audio = new Audio(url);
-                audio.onended = () => { i++; playNext(); };
-                audio.onerror = () => reject(new Error('Google TTS failed'));
-                audio.play().catch(reject);
-            }
-            playNext();
-        });
-    }
-
-    async function playAudio(text, langFullCode) {
+    function playAudio(text, langFullCode) {
         if (!text) return;
+        if (!('speechSynthesis' in window)) return;
+
         showStatus('Đang phát âm...');
-        
-        // Strategy: Try speechSynthesis first (works better on mobile),
-        // fall back to Google TTS if it fails
-        try {
-            await speakWithSynthesis(text, langFullCode);
-            showStatus('Sẵn sàng');
-        } catch (e1) {
-            console.log('speechSynthesis failed, trying Google TTS:', e1);
-            try {
-                await playGoogleTTS(text, langFullCode);
-                showStatus('Sẵn sàng');
-            } catch (e2) {
-                console.log('Google TTS also failed:', e2);
-                showStatus('Lỗi phát âm', true);
-            }
-        }
+
+        // Cancel primer/anything playing
+        window.speechSynthesis.cancel();
+
+        // Small delay to let cancel settle (iOS needs this)
+        setTimeout(() => {
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = langFullCode;
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            utterance.volume = 1.0;
+
+            const voice = findBestVoice(langFullCode);
+            if (voice) utterance.voice = voice;
+
+            utterance.onend = () => showStatus('Sẵn sàng');
+            utterance.onerror = (e) => {
+                if (e.error !== 'interrupted' && e.error !== 'canceled') {
+                    console.warn('TTS error:', e.error);
+                    showStatus('Sẵn sàng');
+                }
+            };
+
+            window.speechSynthesis.speak(utterance);
+
+            // Android keep-alive: speechSynthesis stops after ~15s
+            const keepAlive = setInterval(() => {
+                if (!window.speechSynthesis.speaking) {
+                    clearInterval(keepAlive);
+                } else {
+                    window.speechSynthesis.pause();
+                    window.speechSynthesis.resume();
+                }
+            }, 10000);
+            utterance.onend = () => { clearInterval(keepAlive); showStatus('Sẵn sàng'); };
+            utterance.onerror = (e) => {
+                clearInterval(keepAlive);
+                if (e.error !== 'interrupted' && e.error !== 'canceled') {
+                    showStatus('Sẵn sàng');
+                }
+            };
+        }, 150);
     }
 
     // --- GHI ÂM (VOICE) ---
@@ -358,6 +296,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         currentMode = mode;
         recognition.lang = mode === 'A' ? langA.value : langB.value;
+
+        // iOS FIX: Prime audio channel RIGHT NOW while we are in user gesture context.
+        // This unlocks iOS Safari's audio restriction before the async translation happens.
+        const targetLang = mode === 'A' ? langB.value : langA.value;
+        primeAudioForIOS(targetLang);
+
         try { recognition.start(); } catch(e) {}
     };
 
