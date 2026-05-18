@@ -278,19 +278,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (isIOS) {
             // iOS: audio channel primed in startListening() — use speechSynthesis
-            // iOS has 'Linh' (female, vi-VN) built-in
+            // iOS has good built-in voices (like 'Linh' for vi-VN)
             doSpeakSynthesis(text, langFullCode);
         } else {
-            // Chrome/Android: Google TTS for Vietnamese (best quality + female voice)
-            // speechSynthesis for all other languages
-            waitForVoices().then(() => {
-                if (langCode === 'vi') {
-                    playGoogleTTS(text, langCode)
-                        .catch(() => doSpeakSynthesis(text, langFullCode));
-                } else {
-                    doSpeakSynthesis(text, langFullCode);
-                }
-            });
+            // Chrome/Android: Use Google TTS for ALL languages (best quality + natural female voice)
+            // Fallback to speechSynthesis if Google TTS fails
+            playGoogleTTS(text, langCode)
+                .catch(() => doSpeakSynthesis(text, langFullCode));
         }
     }
 
