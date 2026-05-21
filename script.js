@@ -390,11 +390,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let currentMode = null;
     let accumulatedTranscript = '';
-    let manualStop = false;
-    let isRecording = false;
+    let recordingState = 'idle'; // 'idle', 'starting', 'recording', 'stopping'
 
     // Tạo mới SpeechRecognition instance mỗi lần thu âm
-    // (Android Chrome bị kẹt nếu dùng lại instance cũ sau stop)
+    // (Android Chrome bị kẹt nếu dùng lại instance cũ sau khi stop)
     function createRecognition(lang) {
         const rec = new SpeechRecognition();
         rec.continuous = true;
@@ -402,7 +401,7 @@ document.addEventListener('DOMContentLoaded', () => {
         rec.lang = lang;
 
         rec.onstart = () => {
-            isRecording = true;
+            recordingState = 'recording';
             isSpeaking = false; // Mặc định ban đầu chưa nói
             if (currentMode === 'A') {
                 btnA.classList.add('active');
@@ -469,8 +468,8 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             const msg = errorMessages[event.error] || `Lỗi: ${event.error}`;
             showStatus(msg, true);
-            manualStop = true;
-            isRecording = false;
+            
+            recordingState = 'idle';
             resetRecordingState();
         };
 
@@ -478,27 +477,32 @@ document.addEventListener('DOMContentLoaded', () => {
             clearTimeout(rec.speakingTimeout);
             isSpeaking = false;
 
-            if (manualStop) {
-                isRecording = false;
+            if (recordingState === 'stopping') {
+                recordingState = 'idle';
                 recognition = null; // Giải phóng instance cũ
                 resetRecordingState();
                 processAccumulatedText();
-            } else if (isRecording) {
+            } else if (recordingState === 'recording') {
                 // Trình duyệt tự dừng (timeout) → tự khởi động lại qua một instance hoàn toàn mới!
                 recognition = null;
+                recordingState = 'starting';
                 setTimeout(() => {
-                    if (isRecording && !manualStop) {
+                    if (recordingState === 'starting') {
                         try {
                             recognition = createRecognition(lang);
                             recognition.start();
                         } catch (e) {
-                            isRecording = false;
+                            recordingState = 'idle';
                             recognition = null;
                             resetRecordingState();
                             processAccumulatedText();
                         }
                     }
                 }, 150); // Tránh Android bị lock audio channel bằng một khoảng nghỉ ngắn
+            } else {
+                recordingState = 'idle';
+                recognition = null;
+                resetRecordingState();
             }
         };
 
@@ -534,6 +538,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Trả về trạng thái nút mặc định
     function resetRecordingState() {
         btnA.classList.remove('active');
         btnB.classList.remove('active');
@@ -546,38 +551,42 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // Đang thu âm → bấm lần nữa = DỪNG
-        if (isRecording) {
-            manualStop = true;
-            isRecording = false; // Tắt cờ ngay để tránh loops restart
+        // 1. Nếu đang ở giai đoạn khởi động hoặc dọn dẹp → bỏ qua click để tránh spam micro
+        if (recordingState === 'starting') {
+            showStatus('Đang khởi động micro...');
+            return;
+        }
+        if (recordingState === 'stopping') {
+            return;
+        }
+
+        // 2. Đang thu âm → Bấm lần nữa = DỪNG
+        if (recordingState === 'recording') {
+            recordingState = 'stopping';
 
             if (recognition) {
                 try { recognition.stop(); } catch(e) {}
             }
             
-            // Failsafe: Nếu onend bị kẹt hoặc chậm trễ, tự động giải phóng và kết thúc sau 800ms
+            // Failsafe: Nếu sau 1 giây onend bị kẹt hoặc chậm, tự động hoàn tất bản dịch
             setTimeout(() => {
-                if (recognition) {
-                    try { recognition.abort(); } catch(e) {}
-                    recognition = null;
+                if (recordingState === 'stopping') {
+                    recordingState = 'idle';
+                    if (recognition) {
+                        try { recognition.abort(); } catch(e) {}
+                        recognition = null;
+                    }
                     resetRecordingState();
                     processAccumulatedText();
                 }
-            }, 800);
+            }, 1000);
             return;
         }
 
-        // Dọn dẹp tuyệt đối bất cứ instance cũ nào
-        if (recognition) {
-            try { recognition.abort(); } catch(e) {}
-            recognition = null;
-        }
-
-        // Bắt đầu thu âm mới với instance mới tinh
+        // 3. Nếu đang rảnh (idle) → BẮT ĐẦU THU ÂM MỚI
         currentMode = mode;
         accumulatedTranscript = '';
-        manualStop = false;
-        isRecording = true;
+        recordingState = 'starting';
         isSpeaking = false;
 
         const lang = mode === 'A' ? langA.value : langB.value;
@@ -591,10 +600,24 @@ document.addEventListener('DOMContentLoaded', () => {
             const targetLang = mode === 'A' ? langB.value : langA.value;
             showStatus('Đang chuẩn bị...');
             primeAudioForIOS(targetLang, () => {
-                try { recognition.start(); } catch(e) {}
+                try {
+                    if (recordingState === 'starting') {
+                        recognition.start();
+                    }
+                } catch(e) {
+                    recordingState = 'idle';
+                    recognition = null;
+                    resetRecordingState();
+                }
             });
         } else {
-            try { recognition.start(); } catch(e) {}
+            try {
+                recognition.start();
+            } catch(e) {
+                recordingState = 'idle';
+                recognition = null;
+                resetRecordingState();
+            }
         }
     };
 
