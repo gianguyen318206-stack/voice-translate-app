@@ -378,19 +378,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- GHI ÂM (VOICE) ---
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    let recognition = SpeechRecognition ? new SpeechRecognition() : null;
-    if (recognition) {
-        recognition.continuous = true;       // KHÔNG tự dừng khi im lặng
-        recognition.interimResults = true;   // Hiển thị chữ realtime khi đang nói
-    }
+    let recognition = null;
 
     let currentMode = null;
-    let accumulatedTranscript = '';  // Tích lũy toàn bộ lời nói
-    let manualStop = false;         // Cờ: người dùng chủ động bấm dừng
-    let isRecording = false;        // Trạng thái đang thu âm
+    let accumulatedTranscript = '';
+    let manualStop = false;
+    let isRecording = false;
 
-    if (recognition) {
-        recognition.onstart = () => {
+    // Tạo mới SpeechRecognition instance mỗi lần thu âm
+    // (Android Chrome bị kẹt nếu dùng lại instance cũ sau stop)
+    function createRecognition(lang) {
+        const rec = new SpeechRecognition();
+        rec.continuous = true;
+        rec.interimResults = true;
+        rec.lang = lang;
+
+        rec.onstart = () => {
             isRecording = true;
             if (currentMode === 'A') {
                 btnA.classList.add('active');
@@ -404,8 +407,7 @@ document.addEventListener('DOMContentLoaded', () => {
             showStatus('🔴 Đang thu âm — Bấm lần nữa để dừng');
         };
 
-        // Hiển thị chữ realtime và tích lũy kết quả cuối cùng
-        recognition.onresult = (event) => {
+        rec.onresult = (event) => {
             let finalText = accumulatedTranscript;
             let interimText = '';
 
@@ -430,10 +432,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
-        recognition.onerror = (event) => {
-            // Lỗi 'no-speech' hoặc 'aborted' → bỏ qua, tự khởi động lại
+        rec.onerror = (event) => {
             if (event.error === 'no-speech' || event.error === 'aborted') {
-                return; // onend sẽ tự restart
+                return;
             }
             const errorMessages = {
                 'audio-capture':      'Không truy cập được micro',
@@ -443,34 +444,38 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             const msg = errorMessages[event.error] || `Lỗi: ${event.error}`;
             showStatus(msg, true);
-            manualStop = true; // Lỗi nghiêm trọng → dừng hẳn
+            manualStop = true;
             isRecording = false;
             resetRecordingState();
         };
 
-        recognition.onend = () => {
+        rec.onend = () => {
             if (manualStop) {
-                // Người dùng chủ động bấm dừng → xử lý bản dịch
                 isRecording = false;
+                recognition = null; // Giải phóng instance cũ
                 resetRecordingState();
                 processAccumulatedText();
             } else if (isRecording) {
-                // Trình duyệt tự dừng (timeout/no-speech) → tự khởi động lại
+                // Trình duyệt tự dừng (timeout) → tự khởi động lại
                 try {
-                    recognition.start();
+                    rec.start();
                 } catch (e) {
+                    // Nếu restart thất bại → xử lý text đã có
                     isRecording = false;
+                    recognition = null;
                     resetRecordingState();
                     processAccumulatedText();
                 }
             }
         };
+
+        return rec;
     }
 
     // Xử lý bản dịch sau khi dừng thu âm
     async function processAccumulatedText() {
         const transcript = accumulatedTranscript.trim();
-        accumulatedTranscript = ''; // Reset cho lần sau
+        accumulatedTranscript = '';
 
         if (!transcript) {
             showStatus('Không nghe thấy giọng nói, thử lại nhé!', true);
@@ -497,60 +502,57 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function resetRecordingState() {
-        isRecording = false; // LUÔN đặt lại cờ này
-        manualStop = false;
         btnA.classList.remove('active');
         btnB.classList.remove('active');
         stopWaveform();
     }
 
     const startListening = (mode) => {
-        if (!recognition) {
+        if (!SpeechRecognition) {
             showStatus('Trình duyệt không hỗ trợ thu âm', true);
             return;
         }
 
         // Đang thu âm → bấm lần nữa = DỪNG
-        if (isRecording) {
+        if (isRecording && recognition) {
             manualStop = true;
             try { recognition.stop(); } catch(e) {
-                // Nếu stop() lỗi, reset thủ công
+                // Nếu stop thất bại, force reset
                 isRecording = false;
+                recognition = null;
                 resetRecordingState();
                 processAccumulatedText();
             }
             return;
         }
 
-        // Bắt đầu thu âm mới
+        // Dọn dẹp instance cũ (nếu còn sót)
+        if (recognition) {
+            try { recognition.abort(); } catch(e) {}
+            recognition = null;
+        }
+
+        // Bắt đầu thu âm mới với instance HOÀN TOÀN MỚI
         currentMode = mode;
         accumulatedTranscript = '';
         manualStop = false;
-        recognition.lang = mode === 'A' ? langA.value : langB.value;
+        isRecording = false;
+
+        const lang = mode === 'A' ? langA.value : langB.value;
+        recognition = createRecognition(lang);
 
         if (isIOS) {
-            // Prime global Audio so Google TTS can play asynchronously later
             const silence = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
             googleTTSAudio.src = silence;
             googleTTSAudio.play().catch(()=>{});
 
-            // iOS FIX: prime speechSynthesis FIRST (inside user gesture),
-            // then start recognition AFTER primer finishes.
-            // They CANNOT run at the same time (mic vs speaker conflict).
             const targetLang = mode === 'A' ? langB.value : langA.value;
             showStatus('Đang chuẩn bị...');
             primeAudioForIOS(targetLang, () => {
-                try { recognition.start(); } catch(e) {
-                    showStatus('Lỗi khởi động thu âm', true);
-                    resetRecordingState();
-                }
+                try { recognition.start(); } catch(e) {}
             });
         } else {
-            // Chrome/Android: no priming needed, start directly
-            try { recognition.start(); } catch(e) {
-                showStatus('Lỗi khởi động thu âm', true);
-                resetRecordingState();
-            }
+            try { recognition.start(); } catch(e) {}
         }
     };
 
