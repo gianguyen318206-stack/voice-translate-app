@@ -319,6 +319,12 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const onFinish = () => {
             if (activeReplayBtn) activeReplayBtn.classList.remove('playing');
+            // Giải phóng kênh audio trên iOS ngay lập tức sau khi phát xong
+            try {
+                googleTTSAudio.pause();
+                googleTTSAudio.removeAttribute('src');
+                googleTTSAudio.load();
+            } catch(e) {}
         };
 
         // Use Google TTS universally for the best human-like female voice
@@ -357,21 +363,42 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // iOS ONLY: unlock audio channel synchronously inside user gesture.
-    function primeAudioForIOS(langFullCode) {
-        if (!isIOS || !('speechSynthesis' in window)) {
-            return;
+    // Một lần duy nhất khi người dùng chạm/click vào màn hình để giải phóng (unlock) âm thanh cho iOS Safari
+    let audioUnlocked = false;
+    const unlockAudioForIOS = () => {
+        if (audioUnlocked || !isIOS) return;
+        audioUnlocked = true;
+        
+        // Unlock HTML5 Audio
+        const silence = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+        googleTTSAudio.src = silence;
+        googleTTSAudio.play()
+            .then(() => {
+                googleTTSAudio.pause();
+                googleTTSAudio.removeAttribute('src');
+                googleTTSAudio.load();
+            })
+            .catch(() => {
+                audioUnlocked = false; // Cho phép thử lại nếu thất bại
+            });
+            
+        // Unlock SpeechSynthesis
+        if ('speechSynthesis' in window) {
+            try {
+                window.speechSynthesis.cancel();
+                const primer = new SpeechSynthesisUtterance('.');
+                primer.volume = 0.01;
+                primer.rate = 10;
+                window.speechSynthesis.speak(primer);
+            } catch(e) {}
         }
-        try {
-            window.speechSynthesis.cancel();
-            const primer = new SpeechSynthesisUtterance('.');
-            primer.volume = 0.01;
-            primer.rate   = 10; // super fast ~100ms
-            primer.lang   = langFullCode;
-            const voice = findBestVoice(langFullCode);
-            if (voice) primer.voice = voice;
-            window.speechSynthesis.speak(primer);
-        } catch(e) {}
+        
+        document.removeEventListener('click', unlockAudioForIOS);
+        document.removeEventListener('touchstart', unlockAudioForIOS);
+    };
+    if (isIOS) {
+        document.addEventListener('click', unlockAudioForIOS);
+        document.addEventListener('touchstart', unlockAudioForIOS);
     }
 
     // --- GHI ÂM (VOICE) ---
@@ -387,7 +414,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // (Android Chrome bị kẹt nếu dùng lại instance cũ sau khi stop)
     function createRecognition(lang) {
         const rec = new SpeechRecognition();
-        rec.continuous = true;
+        rec.continuous = !isIOS; // iOS Safari chạy 'continuous: true' cực kỳ không ổn định và dễ kẹt micro
         rec.interimResults = true;
         rec.lang = lang;
 
@@ -452,12 +479,6 @@ document.addEventListener('DOMContentLoaded', () => {
         rec.onend = () => {
             clearTimeout(startupTimeout); // Đã ngắt → hủy failsafe
 
-            // Bẻ gãy các closures bằng cách hủy liên kết tất cả sự kiện để giải phóng bộ nhớ và mic lập tức!
-            rec.onstart = null;
-            rec.onresult = null;
-            rec.onerror = null;
-            rec.onend = null;
-
             // Nếu người dùng bấm Dừng HOẶC trình duyệt tự ngắt khi đang thu âm
             if (recordingState === 'stopping' || recordingState === 'recording') {
                 recordingState = 'idle';
@@ -469,6 +490,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 recognition = null;
                 resetRecordingState();
             }
+
+            // Hủy liên kết tất cả sự kiện ở cuối để giải phóng bộ nhớ và mic lập tức!
+            setTimeout(() => {
+                rec.onstart = null;
+                rec.onresult = null;
+                rec.onerror = null;
+                rec.onend = null;
+            }, 0);
         };
 
         return rec;
@@ -560,8 +589,8 @@ document.addEventListener('DOMContentLoaded', () => {
         // DỪNG TOÀN BỘ ÂM THANH ĐANG PHÁT ĐỂ GIẢI PHÓNG AUDIO CHANNEL (Tránh xung đột micro)
         try {
             googleTTSAudio.pause();
-            googleTTSAudio.currentTime = 0;
-            googleTTSAudio.src = '';
+            googleTTSAudio.removeAttribute('src');
+            googleTTSAudio.load();
         } catch(e) {}
         if ('speechSynthesis' in window) {
             try { window.speechSynthesis.cancel(); } catch(e) {}
@@ -590,12 +619,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const lang = mode === 'A' ? langA.value : langB.value;
         recognition = createRecognition(lang);
-
-        // Chuẩn bị các thiết bị âm thanh đồng bộ trong cùng luồng sự kiện click (Quan trọng cho iOS Safari)
-        if (isIOS) {
-            const targetLang = mode === 'A' ? langB.value : langA.value;
-            primeAudioForIOS(targetLang);
-        }
 
         // GỌI START ĐỒNG BỘ: iOS Safari cấm tuyệt đối gọi start() trong hàm callback bất đồng bộ!
         try {
