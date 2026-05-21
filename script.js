@@ -5,6 +5,15 @@ window.onerror = function (message, source, lineno, colno, error) {
 };
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Cấp quyền âm thanh kép trên iOS 16.4+ (Ngăn chặn việc phát nhạc làm kẹt micro)
+    if (navigator.audioSession) {
+        try {
+            navigator.audioSession.type = 'play-and-record';
+        } catch (e) {
+            console.warn("Không cấu hình được navigator.audioSession:", e);
+        }
+    }
+
     // DOM Elements
     const langA = document.getElementById('lang-a');
     const langB = document.getElementById('lang-b');
@@ -253,14 +262,31 @@ document.addEventListener('DOMContentLoaded', () => {
         return new Promise((resolve, reject) => {
             const chunks = splitTextToChunks(text, 200);
             let i = 0;
+            
+            function cleanup() {
+                googleTTSAudio.onended = null;
+                googleTTSAudio.onerror = null;
+            }
+
             function next() {
-                if (i >= chunks.length) { showStatus('Sẵn sàng'); resolve(); return; }
+                if (i >= chunks.length) { 
+                    cleanup();
+                    showStatus('Sẵn sàng'); 
+                    resolve(); 
+                    return; 
+                }
                 const url = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${langCode}&q=${encodeURIComponent(chunks[i])}`;
                 
                 googleTTSAudio.src = url;
                 googleTTSAudio.onended = () => { i++; next(); };
-                googleTTSAudio.onerror = () => reject(new Error('Google TTS fail'));
-                googleTTSAudio.play().catch(reject);
+                googleTTSAudio.onerror = (err) => {
+                    cleanup();
+                    reject(err || new Error('Google TTS Error'));
+                };
+                googleTTSAudio.play().catch((err) => {
+                    cleanup();
+                    reject(err);
+                });
             }
             next();
         });
@@ -297,14 +323,17 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (chunksFinished >= chunks.length) {
                         clearInterval(keepAlive);
                         showStatus('Sẵn sàng');
+                        lastAudioEndTime = Date.now();
                     }
                 };
                 utterance.onerror = (e) => {
                     chunksFinished++;
                     if (chunksFinished >= chunks.length) {
                         clearInterval(keepAlive);
-                        if (e.error !== 'interrupted' && e.error !== 'canceled')
+                        if (e.error !== 'interrupted' && e.error !== 'canceled') {
                             showStatus('Sẵn sàng');
+                            lastAudioEndTime = Date.now();
+                        }
                     }
                 };
                 window.speechSynthesis.speak(utterance);
@@ -332,10 +361,13 @@ document.addEventListener('DOMContentLoaded', () => {
             if (activeReplayBtn) activeReplayBtn.classList.remove('playing');
             // Giải phóng kênh audio trên iOS ngay lập tức sau khi phát xong
             try {
+                googleTTSAudio.onended = null;
+                googleTTSAudio.onerror = null;
                 googleTTSAudio.pause();
                 googleTTSAudio.removeAttribute('src');
                 googleTTSAudio.load();
             } catch(e) {}
+            lastAudioEndTime = Date.now(); // Cập nhật thời điểm kết thúc âm thanh
         };
 
         // Use Google TTS universally for the best human-like female voice
@@ -420,6 +452,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let accumulatedTranscript = '';
     let recordingState = 'idle'; // 'idle', 'starting', 'recording', 'stopping'
     let startupTimeout = null; // Failsafe tránh kẹt trạng thái khởi động mic
+    let lastAudioEndTime = 0; // Lưu thời điểm cuối cùng phát âm thanh để làm nguội (cool-down) audio session
 
     // Tạo mới SpeechRecognition instance mỗi lần thu âm
     // (Android Chrome bị kẹt nếu dùng lại instance cũ sau khi stop)
@@ -612,13 +645,22 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // DỪNG TOÀN BỘ ÂM THANH ĐANG PHÁT ĐỂ GIẢI PHÓNG AUDIO CHANNEL (Tránh xung đột micro)
+        let stoppedAudio = false;
         try {
-            googleTTSAudio.pause();
-            googleTTSAudio.removeAttribute('src');
-            googleTTSAudio.load();
+            googleTTSAudio.onended = null;
+            googleTTSAudio.onerror = null;
+            if (!googleTTSAudio.paused) {
+                googleTTSAudio.pause();
+                googleTTSAudio.removeAttribute('src');
+                googleTTSAudio.load();
+                stoppedAudio = true;
+            }
         } catch(e) {}
-        if ('speechSynthesis' in window) {
-            try { window.speechSynthesis.cancel(); } catch(e) {}
+        if ('speechSynthesis' in window && window.speechSynthesis.speaking) {
+            try { window.speechSynthesis.cancel(); stoppedAudio = true; } catch(e) {}
+        }
+        if (stoppedAudio) {
+            lastAudioEndTime = Date.now();
         }
         if (replayA) replayA.classList.remove('playing');
         if (replayB) replayB.classList.remove('playing');
@@ -645,16 +687,36 @@ document.addEventListener('DOMContentLoaded', () => {
         const lang = mode === 'A' ? langA.value : langB.value;
         recognition = createRecognition(lang);
 
-        // GỌI START ĐỒNG BỘ: iOS Safari cấm tuyệt đối gọi start() trong hàm callback bất đồng bộ!
-        try {
-            recognition.start();
-        } catch(e) {
-            clearTimeout(startupTimeout);
-            recordingState = 'idle';
-            recognition = null;
-            resetRecordingState();
-            showStatus('Lỗi micro. Vui lòng cấp quyền micro cho trang web!', true);
-            console.log("Không khởi tạo được SpeechRecognition:", e);
+        if (isIOS) {
+            // GỌI START ĐỒNG BỘ: iOS Safari cấm tuyệt đối gọi start() trong hàm callback bất đồng bộ!
+            try {
+                recognition.start();
+            } catch(e) {
+                clearTimeout(startupTimeout);
+                recordingState = 'idle';
+                recognition = null;
+                resetRecordingState();
+                showStatus('Lỗi micro. Vui lòng cấp quyền micro cho trang web!', true);
+                console.log("Không khởi tạo được SpeechRecognition:", e);
+            }
+        } else {
+            // Trên Android/Desktop: Chờ làm nguội 350ms bằng setTimeout để đảm bảo giải phóng audio session
+            const timeSinceAudio = Date.now() - lastAudioEndTime;
+            const startDelay = Math.max(0, 350 - timeSinceAudio);
+            
+            setTimeout(() => {
+                if (recordingState !== 'starting') return;
+                try {
+                    recognition.start();
+                } catch(e) {
+                    clearTimeout(startupTimeout);
+                    recordingState = 'idle';
+                    recognition = null;
+                    resetRecordingState();
+                    showStatus('Lỗi micro. Vui lòng cấp quyền micro cho trang web!', true);
+                    console.log("Không khởi tạo được SpeechRecognition:", e);
+                }
+            }, startDelay);
         }
     };
 
