@@ -75,6 +75,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const canvas = document.getElementById('waveform');
     const canvasCtx = canvas.getContext('2d');
     let drawVisual = null;
+    let isSpeaking = false; // Cờ theo dõi khi có âm thanh truyền vào mic
 
     function startWaveform(color) {
         canvas.width = canvas.offsetWidth;
@@ -93,10 +94,16 @@ document.addEventListener('DOMContentLoaded', () => {
             canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
             
             for (let i = 0; i < barCount; i++) {
-                // Cập nhật target ngẫu nhiên (tạo hiệu ứng nhịp sống động)
-                if (Math.random() < 0.15) {
-                    barTargets[i] = Math.random() * canvas.height * 0.7 + 4;
+                if (isSpeaking) {
+                    // Cập nhật target ngẫu nhiên (tạo hiệu ứng nhịp sống động khi có giọng nói)
+                    if (Math.random() < 0.15) {
+                        barTargets[i] = Math.random() * canvas.height * 0.7 + 4;
+                    }
+                } else {
+                    // Sóng phẳng nhẹ nhàng khi im lặng
+                    barTargets[i] = 2; 
                 }
+                
                 // Chuyển động mượt về target
                 barValues[i] += (barTargets[i] - barValues[i]) * 0.2;
                 
@@ -105,7 +112,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const y = (canvas.height - barHeight) / 2;
                 
                 canvasCtx.fillStyle = color;
-                canvasCtx.globalAlpha = 0.6 + (barHeight / canvas.height) * 0.4;
+                canvasCtx.globalAlpha = isSpeaking ? (0.6 + (barHeight / canvas.height) * 0.4) : 0.15;
                 canvasCtx.beginPath();
                 canvasCtx.roundRect(x, y, barWidth, barHeight, 2);
                 canvasCtx.fill();
@@ -119,6 +126,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (drawVisual) cancelAnimationFrame(drawVisual);
         drawVisual = null;
         canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+        isSpeaking = false; // Reset cờ âm thanh
     }
 
     // --- API DỊCH VÀ ĐỌC ---
@@ -395,6 +403,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         rec.onstart = () => {
             isRecording = true;
+            isSpeaking = false; // Mặc định ban đầu chưa nói
             if (currentMode === 'A') {
                 btnA.classList.add('active');
                 textA.textContent = 'Đang nghe bạn nói...';
@@ -407,7 +416,23 @@ document.addEventListener('DOMContentLoaded', () => {
             showStatus('🔴 Đang thu âm — Bấm lần nữa để dừng');
         };
 
+        // Kích hoạt sóng âm chỉ khi thực sự phát hiện tiếng động/tiếng nói
+        rec.onsoundstart = () => { isSpeaking = true; };
+        rec.onspeechstart = () => { isSpeaking = true; };
+        
+        // Trở về trạng thái tĩnh khi hết tiếng
+        rec.onsoundend = () => { isSpeaking = false; };
+        rec.onspeechend = () => { isSpeaking = false; };
+
         rec.onresult = (event) => {
+            isSpeaking = true; // Chắc chắn có tiếng nói khi có kết quả trả về
+            
+            // Tự động tắt trạng thái sóng động sau 1.2s nếu không có kết quả mới
+            clearTimeout(rec.speakingTimeout);
+            rec.speakingTimeout = setTimeout(() => {
+                isSpeaking = false;
+            }, 1200);
+
             let finalText = accumulatedTranscript;
             let interimText = '';
 
@@ -450,22 +475,30 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         rec.onend = () => {
+            clearTimeout(rec.speakingTimeout);
+            isSpeaking = false;
+
             if (manualStop) {
                 isRecording = false;
                 recognition = null; // Giải phóng instance cũ
                 resetRecordingState();
                 processAccumulatedText();
             } else if (isRecording) {
-                // Trình duyệt tự dừng (timeout) → tự khởi động lại
-                try {
-                    rec.start();
-                } catch (e) {
-                    // Nếu restart thất bại → xử lý text đã có
-                    isRecording = false;
-                    recognition = null;
-                    resetRecordingState();
-                    processAccumulatedText();
-                }
+                // Trình duyệt tự dừng (timeout) → tự khởi động lại qua một instance hoàn toàn mới!
+                recognition = null;
+                setTimeout(() => {
+                    if (isRecording && !manualStop) {
+                        try {
+                            recognition = createRecognition(lang);
+                            recognition.start();
+                        } catch (e) {
+                            isRecording = false;
+                            recognition = null;
+                            resetRecordingState();
+                            processAccumulatedText();
+                        }
+                    }
+                }, 150); // Tránh Android bị lock audio channel bằng một khoảng nghỉ ngắn
             }
         };
 
@@ -514,29 +547,38 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // Đang thu âm → bấm lần nữa = DỪNG
-        if (isRecording && recognition) {
+        if (isRecording) {
             manualStop = true;
-            try { recognition.stop(); } catch(e) {
-                // Nếu stop thất bại, force reset
-                isRecording = false;
-                recognition = null;
-                resetRecordingState();
-                processAccumulatedText();
+            isRecording = false; // Tắt cờ ngay để tránh loops restart
+
+            if (recognition) {
+                try { recognition.stop(); } catch(e) {}
             }
+            
+            // Failsafe: Nếu onend bị kẹt hoặc chậm trễ, tự động giải phóng và kết thúc sau 800ms
+            setTimeout(() => {
+                if (recognition) {
+                    try { recognition.abort(); } catch(e) {}
+                    recognition = null;
+                    resetRecordingState();
+                    processAccumulatedText();
+                }
+            }, 800);
             return;
         }
 
-        // Dọn dẹp instance cũ (nếu còn sót)
+        // Dọn dẹp tuyệt đối bất cứ instance cũ nào
         if (recognition) {
             try { recognition.abort(); } catch(e) {}
             recognition = null;
         }
 
-        // Bắt đầu thu âm mới với instance HOÀN TOÀN MỚI
+        // Bắt đầu thu âm mới với instance mới tinh
         currentMode = mode;
         accumulatedTranscript = '';
         manualStop = false;
-        isRecording = false;
+        isRecording = true;
+        isSpeaking = false;
 
         const lang = mode === 'A' ? langA.value : langB.value;
         recognition = createRecognition(lang);
