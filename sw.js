@@ -1,4 +1,4 @@
-const CACHE_NAME = 'translator-cache-v10';
+const CACHE_NAME = 'translator-cache-v11';
 const urlsToCache = [
   './',
   './index.html',

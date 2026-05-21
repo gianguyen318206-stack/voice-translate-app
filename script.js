@@ -364,24 +364,21 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // iOS ONLY: unlock audio channel inside user gesture,
-    // then call onDone() AFTER primer finishes so mic can start safely.
-    // iOS cannot record mic AND play audio at the same time!
-    function primeAudioForIOS(langFullCode, onDone) {
+    // iOS ONLY: unlock audio channel synchronously inside user gesture.
+    function primeAudioForIOS(langFullCode) {
         if (!isIOS || !('speechSynthesis' in window)) {
-            if (onDone) onDone();
             return;
         }
-        window.speechSynthesis.cancel();
-        const primer = new SpeechSynthesisUtterance('.');
-        primer.volume = 0.01;
-        primer.rate   = 10; // super fast ~100ms
-        primer.lang   = langFullCode;
-        const voice = findBestVoice(langFullCode);
-        if (voice) primer.voice = voice;
-        primer.onend  = () => { if (onDone) onDone(); };
-        primer.onerror = () => { if (onDone) onDone(); }; // failsafe
-        window.speechSynthesis.speak(primer);
+        try {
+            window.speechSynthesis.cancel();
+            const primer = new SpeechSynthesisUtterance('.');
+            primer.volume = 0.01;
+            primer.rate   = 10; // super fast ~100ms
+            primer.lang   = langFullCode;
+            const voice = findBestVoice(langFullCode);
+            if (voice) primer.voice = voice;
+            window.speechSynthesis.speak(primer);
+        } catch(e) {}
     }
 
     // --- GHI ÂM (VOICE) ---
@@ -592,32 +589,24 @@ document.addEventListener('DOMContentLoaded', () => {
         const lang = mode === 'A' ? langA.value : langB.value;
         recognition = createRecognition(lang);
 
+        // Chuẩn bị các thiết bị âm thanh đồng bộ trong cùng luồng sự kiện click (Quan trọng cho iOS Safari)
         if (isIOS) {
             const silence = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
             googleTTSAudio.src = silence;
             googleTTSAudio.play().catch(()=>{});
 
             const targetLang = mode === 'A' ? langB.value : langA.value;
-            showStatus('Đang chuẩn bị...');
-            primeAudioForIOS(targetLang, () => {
-                try {
-                    if (recordingState === 'starting') {
-                        recognition.start();
-                    }
-                } catch(e) {
-                    recordingState = 'idle';
-                    recognition = null;
-                    resetRecordingState();
-                }
-            });
-        } else {
-            try {
-                recognition.start();
-            } catch(e) {
-                recordingState = 'idle';
-                recognition = null;
-                resetRecordingState();
-            }
+            primeAudioForIOS(targetLang);
+        }
+
+        // GỌI START ĐỒNG BỘ: iOS Safari cấm tuyệt đối gọi start() trong hàm callback bất đồng bộ!
+        try {
+            recognition.start();
+        } catch(e) {
+            recordingState = 'idle';
+            recognition = null;
+            resetRecordingState();
+            console.log("Không khởi tạo được SpeechRecognition:", e);
         }
     };
 
@@ -705,12 +694,36 @@ document.addEventListener('DOMContentLoaded', () => {
     if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
             navigator.serviceWorker.register('./sw.js')
-                .then(registration => {
-                    console.log('ServiceWorker đã được đăng ký thành công:', registration.scope);
+                .then(reg => {
+                    console.log('ServiceWorker đã được đăng ký thành công:', reg.scope);
+                    
+                    // Nếu phát hiện có Service Worker mới đang chờ kích hoạt → Tự động reload để cập nhật
+                    reg.onupdatefound = () => {
+                        const installingWorker = reg.installing;
+                        if (installingWorker) {
+                            installingWorker.onstatechange = () => {
+                                if (installingWorker.state === 'installed') {
+                                    if (navigator.serviceWorker.controller) {
+                                        console.log('Phát hiện bản cập nhật mới! Đang tự động làm mới trang...');
+                                        window.location.reload();
+                                    }
+                                }
+                            };
+                        }
+                    };
                 })
                 .catch(err => {
                     console.log('Lỗi đăng ký ServiceWorker:', err);
                 });
+        });
+
+        // Tự động reload khi có controller mới chiếm quyền điều khiển
+        let refreshing = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (!refreshing) {
+                refreshing = true;
+                window.location.reload();
+            }
         });
     }
 });
