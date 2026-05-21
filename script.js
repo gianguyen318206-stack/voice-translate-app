@@ -234,30 +234,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Global audio element to bypass iOS autoplay restrictions
     const googleTTSAudio = new Audio();
-    googleTTSAudio.crossOrigin = 'anonymous';
+    googleTTSAudio.volume = 1.0; // Âm lượng tối đa
 
-    // Web Audio API: Khuếch đại âm lượng gấp 3 lần qua GainNode (không bị echo)
-    let ttsAudioCtx = null;
-    let ttsGainNode = null;
-    let ttsMediaSource = null;
-    let ttsBoostConnected = false;
-
-    function connectVolumeBoost() {
-        if (ttsBoostConnected) return;
-        try {
-            if (!ttsAudioCtx) ttsAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            ttsMediaSource = ttsAudioCtx.createMediaElementSource(googleTTSAudio);
-            ttsGainNode = ttsAudioCtx.createGain();
-            ttsGainNode.gain.value = 3.0; // Khuếch đại âm lượng x3
-            ttsMediaSource.connect(ttsGainNode);
-            ttsGainNode.connect(ttsAudioCtx.destination);
-            ttsBoostConnected = true;
-        } catch (e) {
-            console.log('Volume boost not available, using default volume:', e);
-        }
-    }
-
-    // Play via Google Translate TTS (better quality, natural female voice)
+    // Play via Google Translate TTS (giọng nữ tự nhiên, chất lượng cao)
     function playGoogleTTS(text, langCode) {
         return new Promise((resolve, reject) => {
             const chunks = splitTextToChunks(text, 200);
@@ -269,13 +248,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 googleTTSAudio.src = url;
                 googleTTSAudio.onended = () => { i++; next(); };
                 googleTTSAudio.onerror = () => reject(new Error('Google TTS fail'));
-                
-                // Kết nối bộ khuếch đại khi phát lần đầu
-                connectVolumeBoost();
-                if (ttsAudioCtx && ttsAudioCtx.state === 'suspended') {
-                    ttsAudioCtx.resume();
-                }
-                
                 googleTTSAudio.play().catch(reject);
             }
             next();
