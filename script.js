@@ -148,8 +148,9 @@ document.addEventListener('DOMContentLoaded', () => {
     //   → wait for voices to load, then speak normally
     // =====================================================
 
-    // Detect iOS
+    // Detect iOS & Mobile
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
     // Voice management (Chrome Android loads voices async)
     let availableVoices = [];
@@ -414,7 +415,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // (Android Chrome bị kẹt nếu dùng lại instance cũ sau khi stop)
     function createRecognition(lang) {
         const rec = new SpeechRecognition();
-        rec.continuous = !isIOS; // iOS Safari chạy 'continuous: true' cực kỳ không ổn định và dễ kẹt micro
+        rec.continuous = !isMobile; // Mobile chạy 'continuous: true' rất không ổn định và dễ kẹt micro
         rec.interimResults = true;
         rec.lang = lang;
 
@@ -505,7 +506,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Xử lý bản dịch sau khi dừng thu âm
     async function processAccumulatedText() {
-        const transcript = accumulatedTranscript.trim();
+        // Ưu tiên lấy trực tiếp văn bản hiển thị trên màn hình để giữ lại các từ nói cuối (interim text) khi bị abort
+        let transcript = '';
+        if (currentMode === 'A') {
+            transcript = textA.textContent;
+            const placeholders = ['Bạn nói...', 'Đang nghe bạn nói...', 'Đang dịch...'];
+            if (placeholders.includes(transcript.trim())) transcript = '';
+        } else {
+            transcript = textB.textContent;
+            const placeholders = ['Đối tác nói...', 'Đang nghe đối tác...', 'Đang dịch...'];
+            if (placeholders.includes(transcript.trim())) transcript = '';
+        }
+        
+        transcript = (transcript || accumulatedTranscript).trim();
         accumulatedTranscript = '';
 
         if (!transcript) {
@@ -568,7 +581,7 @@ document.addEventListener('DOMContentLoaded', () => {
             recordingState = 'stopping';
 
             if (recognition) {
-                try { recognition.stop(); } catch(e) {}
+                try { recognition.abort(); } catch(e) {} // Dùng abort() thay vì stop() để giải phóng mic ngay lập tức trên iOS/Android
             }
             
             // Failsafe: Nếu sau 1 giây onend bị kẹt hoặc chậm, tự động hoàn tất bản dịch
