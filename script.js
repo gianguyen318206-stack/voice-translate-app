@@ -322,6 +322,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     chunksFinished++;
                     if (chunksFinished >= chunks.length) {
                         clearInterval(keepAlive);
+                        try { window.speechSynthesis.cancel(); } catch(e) {} // Cường chế hủy để reset trạng thái speaking trên Safari/Chrome
                         showStatus('Sẵn sàng');
                         lastAudioEndTime = Date.now();
                     }
@@ -330,6 +331,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     chunksFinished++;
                     if (chunksFinished >= chunks.length) {
                         clearInterval(keepAlive);
+                        try { window.speechSynthesis.cancel(); } catch(err) {} // Cường chế hủy để reset trạng thái
                         if (e.error !== 'interrupted' && e.error !== 'canceled') {
                             showStatus('Sẵn sàng');
                             lastAudioEndTime = Date.now();
