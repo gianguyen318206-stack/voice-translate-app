@@ -452,41 +452,12 @@ document.addEventListener('DOMContentLoaded', () => {
         rec.onend = () => {
             clearTimeout(startupTimeout); // Đã ngắt → hủy failsafe
 
-            if (recordingState === 'stopping') {
+            // Nếu người dùng bấm Dừng HOẶC trình duyệt tự ngắt khi đang thu âm
+            if (recordingState === 'stopping' || recordingState === 'recording') {
                 recordingState = 'idle';
-                recognition = null; // Giải phóng instance cũ
+                recognition = null; // Giải phóng instance
                 resetRecordingState();
                 processAccumulatedText();
-            } else if (recordingState === 'recording') {
-                // Trình duyệt tự dừng (timeout) → tự khởi động lại qua một instance hoàn toàn mới!
-                recognition = null;
-                recordingState = 'starting';
-                
-                // Set lại failsafe cho quá trình restart
-                clearTimeout(startupTimeout);
-                startupTimeout = setTimeout(() => {
-                    if (recordingState === 'starting') {
-                        recordingState = 'idle';
-                        recognition = null;
-                        resetRecordingState();
-                        showStatus('Micro bị kẹt. Vui lòng bấm mở lại nhé!', true);
-                    }
-                }, 3500);
-
-                setTimeout(() => {
-                    if (recordingState === 'starting') {
-                        try {
-                            recognition = createRecognition(lang);
-                            recognition.start();
-                        } catch (e) {
-                            clearTimeout(startupTimeout);
-                            recordingState = 'idle';
-                            recognition = null;
-                            resetRecordingState();
-                            processAccumulatedText();
-                        }
-                    }
-                }, 150); // Tránh Android bị lock audio channel bằng một khoảng nghỉ ngắn
             } else {
                 recordingState = 'idle';
                 recognition = null;
