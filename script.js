@@ -452,6 +452,12 @@ document.addEventListener('DOMContentLoaded', () => {
         rec.onend = () => {
             clearTimeout(startupTimeout); // Đã ngắt → hủy failsafe
 
+            // Bẻ gãy các closures bằng cách hủy liên kết tất cả sự kiện để giải phóng bộ nhớ và mic lập tức!
+            rec.onstart = null;
+            rec.onresult = null;
+            rec.onerror = null;
+            rec.onend = null;
+
             // Nếu người dùng bấm Dừng HOẶC trình duyệt tự ngắt khi đang thu âm
             if (recordingState === 'stopping' || recordingState === 'recording') {
                 recordingState = 'idle';
@@ -475,6 +481,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (!transcript) {
             showStatus('Không nghe thấy giọng nói, thử lại nhé!', true);
+            resetRecordingState(); // Đảm bảo reset text khi không nhận được tiếng
             return;
         }
 
@@ -497,11 +504,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Trả về trạng thái nút mặc định
+    // Trả về trạng thái nút mặc định và hoàn tác văn bản rỗng
     function resetRecordingState() {
         btnA.classList.remove('active');
         btnB.classList.remove('active');
         stopWaveform();
+
+        // Trả lại chữ hiển thị mặc định nếu không có chữ nào được dịch/nói
+        if (textA.textContent === 'Đang nghe bạn nói...' || textA.textContent === 'Đang dịch...') {
+            textA.textContent = 'Bạn nói...';
+        }
+        if (textB.textContent === 'Đang nghe đối tác...' || textB.textContent === 'Đang dịch...') {
+            textB.textContent = 'Đối tác nói...';
+        }
     }
 
     const startListening = (mode) => {
@@ -542,6 +557,18 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        // DỪNG TOÀN BỘ ÂM THANH ĐANG PHÁT ĐỂ GIẢI PHÓNG AUDIO CHANNEL (Tránh xung đột micro)
+        try {
+            googleTTSAudio.pause();
+            googleTTSAudio.currentTime = 0;
+            googleTTSAudio.src = '';
+        } catch(e) {}
+        if ('speechSynthesis' in window) {
+            try { window.speechSynthesis.cancel(); } catch(e) {}
+        }
+        if (replayA) replayA.classList.remove('playing');
+        if (replayB) replayB.classList.remove('playing');
+
         // 3. Nếu đang rảnh (idle) → BẮT ĐẦU THU ÂM MỚI
         currentMode = mode;
         accumulatedTranscript = '';
@@ -566,10 +593,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Chuẩn bị các thiết bị âm thanh đồng bộ trong cùng luồng sự kiện click (Quan trọng cho iOS Safari)
         if (isIOS) {
-            const silence = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
-            googleTTSAudio.src = silence;
-            googleTTSAudio.play().catch(()=>{});
-
             const targetLang = mode === 'A' ? langB.value : langA.value;
             primeAudioForIOS(targetLang);
         }
