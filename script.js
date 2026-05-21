@@ -13,6 +13,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const statusIndicator = document.getElementById('status-indicator');
     const flipBtn = document.getElementById('flip-btn');
     const partnerArea = document.getElementById('partner-area');
+    const replayA = document.getElementById('replay-a');
+    const replayB = document.getElementById('replay-b');
+
+    // Lưu lại bản dịch gần nhất để phát lại
+    let lastPlayedA = { text: '', lang: '' };
+    let lastPlayedB = { text: '', lang: '' };
 
     // UI Updates
     const updateLabels = () => {
@@ -65,65 +71,54 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- HIỆU ỨNG SÓNG ÂM THANH (WAVEFORM) ---
+    // Dùng hiệu ứng giả lập (không cần getUserMedia) để tránh xung đột mic trên Android
     const canvas = document.getElementById('waveform');
     const canvasCtx = canvas.getContext('2d');
-    let audioCtx, analyser, source, drawVisual;
-    let waveformStream = null;
+    let drawVisual = null;
 
-    async function startWaveform(color) {
-        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        if (!waveformStream) {
-            try {
-                // Thêm cấu hình tắt lọc tiếng ồn để tránh HĐH tự động giảm âm lượng (ducking)
-                waveformStream = await navigator.mediaDevices.getUserMedia({ 
-                    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } 
-                });
-                source = audioCtx.createMediaStreamSource(waveformStream);
-                if (!analyser) analyser = audioCtx.createAnalyser();
-                analyser.fftSize = 256;
-                source.connect(analyser);
-            } catch (err) {
-                console.log("Audio Stream Error for Waveform:", err);
-                return;
-            }
-        }
-        
+    function startWaveform(color) {
         canvas.width = canvas.offsetWidth;
         canvas.height = canvas.offsetHeight;
-        const bufferLength = analyser.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
-
+        
+        const barCount = 40;
+        const barWidth = (canvas.width / barCount) * 0.7;
+        const gap = (canvas.width / barCount) * 0.3;
+        
+        // Tạo mảng giá trị ngẫu nhiên cho mỗi thanh sóng
+        const barValues = new Array(barCount).fill(0);
+        const barTargets = new Array(barCount).fill(0);
+        
         function draw() {
             drawVisual = requestAnimationFrame(draw);
-            analyser.getByteFrequencyData(dataArray);
             canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
             
-            const barWidth = (canvas.width / bufferLength) * 2.5;
-            let x = 0;
-            for(let i = 0; i < bufferLength; i++) {
-                const barHeight = dataArray[i] / 3;
+            for (let i = 0; i < barCount; i++) {
+                // Cập nhật target ngẫu nhiên (tạo hiệu ứng nhịp sống động)
+                if (Math.random() < 0.15) {
+                    barTargets[i] = Math.random() * canvas.height * 0.7 + 4;
+                }
+                // Chuyển động mượt về target
+                barValues[i] += (barTargets[i] - barValues[i]) * 0.2;
+                
+                const barHeight = barValues[i];
+                const x = i * (barWidth + gap);
+                const y = (canvas.height - barHeight) / 2;
+                
                 canvasCtx.fillStyle = color;
-                canvasCtx.fillRect(x, (canvas.height - barHeight) / 2, barWidth, barHeight);
-                x += barWidth + 1;
+                canvasCtx.globalAlpha = 0.6 + (barHeight / canvas.height) * 0.4;
+                canvasCtx.beginPath();
+                canvasCtx.roundRect(x, y, barWidth, barHeight, 2);
+                canvasCtx.fill();
             }
+            canvasCtx.globalAlpha = 1;
         }
         draw();
     }
 
     function stopWaveform() {
         if (drawVisual) cancelAnimationFrame(drawVisual);
+        drawVisual = null;
         canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
-        
-        // QUAN TRỌNG: Phải tắt hẳn micro để hệ điều hành không bị nhầm là đang gọi điện thoại
-        // Từ đó khôi phục lại âm lượng loa ngoài ở mức tối đa (không bị ducking)
-        if (waveformStream) {
-            waveformStream.getTracks().forEach(track => track.stop());
-            waveformStream = null;
-        }
-        if (source) {
-            source.disconnect();
-            source = null;
-        }
     }
 
     // --- API DỊCH VÀ ĐỌC ---
@@ -237,9 +232,30 @@ document.addEventListener('DOMContentLoaded', () => {
         return chunks.filter(c => c.length > 0);
     }
 
-    // Global audio elements to bypass iOS autoplay restrictions
+    // Global audio element to bypass iOS autoplay restrictions
     const googleTTSAudio = new Audio();
-    const googleTTSAudio2 = new Audio(); // Kênh đôi để khuếch đại âm lượng to hơn (Dual-channel boost)
+    googleTTSAudio.crossOrigin = 'anonymous';
+
+    // Web Audio API: Khuếch đại âm lượng gấp 3 lần qua GainNode (không bị echo)
+    let ttsAudioCtx = null;
+    let ttsGainNode = null;
+    let ttsMediaSource = null;
+    let ttsBoostConnected = false;
+
+    function connectVolumeBoost() {
+        if (ttsBoostConnected) return;
+        try {
+            if (!ttsAudioCtx) ttsAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            ttsMediaSource = ttsAudioCtx.createMediaElementSource(googleTTSAudio);
+            ttsGainNode = ttsAudioCtx.createGain();
+            ttsGainNode.gain.value = 3.0; // Khuếch đại âm lượng x3
+            ttsMediaSource.connect(ttsGainNode);
+            ttsGainNode.connect(ttsAudioCtx.destination);
+            ttsBoostConnected = true;
+        } catch (e) {
+            console.log('Volume boost not available, using default volume:', e);
+        }
+    }
 
     // Play via Google Translate TTS (better quality, natural female voice)
     function playGoogleTTS(text, langCode) {
@@ -251,13 +267,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 const url = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${langCode}&q=${encodeURIComponent(chunks[i])}`;
                 
                 googleTTSAudio.src = url;
-                googleTTSAudio2.src = url; // Nạp cùng URL
-                
                 googleTTSAudio.onended = () => { i++; next(); };
                 googleTTSAudio.onerror = () => reject(new Error('Google TTS fail'));
                 
+                // Kết nối bộ khuếch đại khi phát lần đầu
+                connectVolumeBoost();
+                if (ttsAudioCtx && ttsAudioCtx.state === 'suspended') {
+                    ttsAudioCtx.resume();
+                }
+                
                 googleTTSAudio.play().catch(reject);
-                googleTTSAudio2.play().catch(() => {}); // Phát đồng thời để tạo hiệu ứng âm thanh to hơn (+3dB)
             }
             next();
         });
@@ -309,19 +328,61 @@ document.addEventListener('DOMContentLoaded', () => {
         }, delay);
     }
 
-    function playAudio(text, langFullCode) {
+    function playAudio(text, langFullCode, source) {
         if (!text) return;
         showStatus('Đang phát âm...');
         const langCode = langFullCode.split('-')[0];
 
+        // Lưu lại để có thể phát lại sau
+        if (source === 'A') {
+            lastPlayedA = { text, lang: langFullCode };
+        } else if (source === 'B') {
+            lastPlayedB = { text, lang: langFullCode };
+        }
+
+        // Hiệu ứng nút loa đang phát
+        const activeReplayBtn = source === 'B' ? replayB : replayA;
+        if (activeReplayBtn) activeReplayBtn.classList.add('playing');
+        
+        const onFinish = () => {
+            if (activeReplayBtn) activeReplayBtn.classList.remove('playing');
+        };
+
         // Use Google TTS universally for the best human-like female voice
-        // (iOS is now supported because we prime googleTTSAudio on click)
         playGoogleTTS(text, langCode)
+            .then(onFinish)
             .catch(() => {
                 // Fallback to synthesis only if Google TTS completely fails
                 doSpeakSynthesis(text, langFullCode);
+                onFinish();
             });
     }
+
+    // --- NÚT PHÁT LẠI (REPLAY) ---
+    replayA.addEventListener('click', (e) => {
+        e.stopPropagation(); // Tránh trigger thu âm khi bấm nút loa
+        if (lastPlayedA.text) {
+            playAudio(lastPlayedA.text, lastPlayedA.lang, 'A');
+        } else {
+            // Nếu chưa có bản dịch, đọc text hiện tại trên màn hình
+            const currentText = textA.textContent;
+            if (currentText && currentText !== 'Bạn nói...' && currentText !== 'Đang dịch...') {
+                playAudio(currentText, langA.value, 'A');
+            }
+        }
+    });
+
+    replayB.addEventListener('click', (e) => {
+        e.stopPropagation(); // Tránh trigger thu âm khi bấm nút loa
+        if (lastPlayedB.text) {
+            playAudio(lastPlayedB.text, lastPlayedB.lang, 'B');
+        } else {
+            const currentText = textB.textContent;
+            if (currentText && currentText !== 'Đối tác nói...' && currentText !== 'Đang dịch...') {
+                playAudio(currentText, langB.value, 'B');
+            }
+        }
+    });
 
     // iOS ONLY: unlock audio channel inside user gesture,
     // then call onDone() AFTER primer finishes so mic can start safely.
@@ -454,7 +515,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const translated = await translateAPI(transcript, langA.value, langB.value);
             textB.textContent = translated;
             addHistory(transcript, labelA.textContent, translated, labelB.textContent);
-            playAudio(translated, langB.value);
+            playAudio(translated, langB.value, 'B');
         } else {
             textB.textContent = transcript;
             textA.textContent = 'Đang dịch...';
@@ -462,7 +523,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const translated = await translateAPI(transcript, langB.value, langA.value);
             textA.textContent = translated;
             addHistory(transcript, labelB.textContent, translated, labelA.textContent);
-            playAudio(translated, langA.value);
+            playAudio(translated, langA.value, 'A');
         }
     }
 
@@ -496,8 +557,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const silence = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
             googleTTSAudio.src = silence;
             googleTTSAudio.play().catch(()=>{});
-            googleTTSAudio2.src = silence;
-            googleTTSAudio2.play().catch(()=>{});
 
             // iOS FIX: prime speechSynthesis FIRST (inside user gesture),
             // then start recognition AFTER primer finishes.
@@ -585,7 +644,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const translated = await translateAPI(extracted, langB.value, langA.value);
             textA.textContent = translated;
             addHistory("[Ảnh] " + extracted, labelB.textContent, translated, labelA.textContent);
-            playAudio(translated, langA.value);
+            playAudio(translated, langA.value, 'A');
         } catch (err) {
             ocrStatus.classList.remove('show');
             closeCameraBtn.click();
