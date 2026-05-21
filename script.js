@@ -412,20 +412,16 @@ document.addEventListener('DOMContentLoaded', () => {
             for (let i = 0; i < event.results.length; i++) {
                 const result = event.results[i];
                 if (result.isFinal) {
-                    // Câu đã xác nhận xong → tích lũy
-                    // Chỉ thêm nếu chưa có trong accumulatedTranscript (tránh trùng)
                     const newText = result[0].transcript;
                     if (!accumulatedTranscript.includes(newText.trim())) {
                         accumulatedTranscript += (accumulatedTranscript ? ' ' : '') + newText.trim();
                     }
                     finalText = accumulatedTranscript;
                 } else {
-                    // Đang nói dở → hiển thị tạm (chữ nhạt)
                     interimText += result[0].transcript;
                 }
             }
 
-            // Hiển thị lên màn hình
             const displayText = finalText + (interimText ? ' ' + interimText : '');
             if (currentMode === 'A') {
                 textA.textContent = displayText || 'Đang nghe bạn nói...';
@@ -448,6 +444,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const msg = errorMessages[event.error] || `Lỗi: ${event.error}`;
             showStatus(msg, true);
             manualStop = true; // Lỗi nghiêm trọng → dừng hẳn
+            isRecording = false;
             resetRecordingState();
         };
 
@@ -500,6 +497,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function resetRecordingState() {
+        isRecording = false; // LUÔN đặt lại cờ này
+        manualStop = false;
         btnA.classList.remove('active');
         btnB.classList.remove('active');
         stopWaveform();
@@ -514,7 +513,12 @@ document.addEventListener('DOMContentLoaded', () => {
         // Đang thu âm → bấm lần nữa = DỪNG
         if (isRecording) {
             manualStop = true;
-            recognition.stop();
+            try { recognition.stop(); } catch(e) {
+                // Nếu stop() lỗi, reset thủ công
+                isRecording = false;
+                resetRecordingState();
+                processAccumulatedText();
+            }
             return;
         }
 
@@ -536,11 +540,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const targetLang = mode === 'A' ? langB.value : langA.value;
             showStatus('Đang chuẩn bị...');
             primeAudioForIOS(targetLang, () => {
-                try { recognition.start(); } catch(e) {}
+                try { recognition.start(); } catch(e) {
+                    showStatus('Lỗi khởi động thu âm', true);
+                    resetRecordingState();
+                }
             });
         } else {
             // Chrome/Android: no priming needed, start directly
-            try { recognition.start(); } catch(e) {}
+            try { recognition.start(); } catch(e) {
+                showStatus('Lỗi khởi động thu âm', true);
+                resetRecordingState();
+            }
         }
     };
 
