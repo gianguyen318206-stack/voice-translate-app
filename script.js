@@ -689,36 +689,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const lang = mode === 'A' ? langA.value : langB.value;
         recognition = createRecognition(lang);
 
-        if (isIOS) {
-            // GỌI START ĐỒNG BỘ: iOS Safari cấm tuyệt đối gọi start() trong hàm callback bất đồng bộ!
-            try {
-                recognition.start();
-            } catch(e) {
-                clearTimeout(startupTimeout);
-                recordingState = 'idle';
-                recognition = null;
-                resetRecordingState();
-                showStatus('Lỗi micro. Vui lòng cấp quyền micro cho trang web!', true);
-                console.log("Không khởi tạo được SpeechRecognition:", e);
-            }
-        } else {
-            // Trên Android/Desktop: Chờ làm nguội 350ms bằng setTimeout để đảm bảo giải phóng audio session
-            const timeSinceAudio = Date.now() - lastAudioEndTime;
-            const startDelay = Math.max(0, 350 - timeSinceAudio);
-            
-            setTimeout(() => {
-                if (recordingState !== 'starting') return;
-                try {
-                    recognition.start();
-                } catch(e) {
-                    clearTimeout(startupTimeout);
-                    recordingState = 'idle';
-                    recognition = null;
-                    resetRecordingState();
-                    showStatus('Lỗi micro. Vui lòng cấp quyền micro cho trang web!', true);
-                    console.log("Không khởi tạo được SpeechRecognition:", e);
-                }
-            }, startDelay);
+        // GỌI START ĐỒNG BỘ: Cấm tuyệt đối gọi start() trong hàm callback bất đồng bộ (setTimeout) trên mọi trình duyệt di động!
+        try {
+            recognition.start();
+        } catch(e) {
+            clearTimeout(startupTimeout);
+            recordingState = 'idle';
+            recognition = null;
+            resetRecordingState();
+            showStatus('Lỗi micro. Vui lòng cấp quyền micro cho trang web!', true);
+            console.log("Không khởi tạo được SpeechRecognition:", e);
         }
     };
 
