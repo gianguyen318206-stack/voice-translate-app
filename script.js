@@ -1,3 +1,9 @@
+// Bắt lỗi JavaScript toàn cục để tự động hiển thị trên điện thoại khi gặp sự cố
+window.onerror = function (message, source, lineno, colno, error) {
+    alert("Cảnh báo lỗi: " + message + "\nTại: Dòng " + lineno + ", Cột " + colno);
+    return false;
+};
+
 document.addEventListener('DOMContentLoaded', () => {
     // DOM Elements
     const langA = document.getElementById('lang-a');
@@ -108,7 +114,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 canvasCtx.fillStyle = color;
                 canvasCtx.globalAlpha = 0.6 + (barHeight / canvas.height) * 0.4;
                 canvasCtx.beginPath();
-                canvasCtx.roundRect(x, y, barWidth, barHeight, 2);
+                if (canvasCtx.roundRect) {
+                    canvasCtx.roundRect(x, y, barWidth, barHeight, 2);
+                } else {
+                    canvasCtx.rect(x, y, barWidth, barHeight);
+                }
                 canvasCtx.fill();
             }
             canvasCtx.globalAlpha = 1;
@@ -461,7 +471,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         rec.onerror = (event) => {
             clearTimeout(startupTimeout); // Gặp lỗi → hủy failsafe
-            if (event.error === 'no-speech' || event.error === 'aborted') {
+            
+            // Chỉ bỏ qua lỗi no-speech, hoặc lỗi aborted nếu do chúng ta chủ động nhấn dừng
+            if (event.error === 'no-speech' || (event.error === 'aborted' && recordingState === 'stopping')) {
                 return;
             }
             const errorMessages = {
