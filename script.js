@@ -388,6 +388,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentMode = null;
     let accumulatedTranscript = '';
     let recordingState = 'idle'; // 'idle', 'starting', 'recording', 'stopping'
+    let startupTimeout = null; // Failsafe tránh kẹt trạng thái khởi động mic
 
     // Tạo mới SpeechRecognition instance mỗi lần thu âm
     // (Android Chrome bị kẹt nếu dùng lại instance cũ sau khi stop)
@@ -398,6 +399,7 @@ document.addEventListener('DOMContentLoaded', () => {
         rec.lang = lang;
 
         rec.onstart = () => {
+            clearTimeout(startupTimeout); // Đã kết nối thành công → hủy failsafe
             recordingState = 'recording';
             isSpeaking = false; // Mặc định ban đầu chưa nói
             if (currentMode === 'A') {
@@ -454,6 +456,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         rec.onerror = (event) => {
+            clearTimeout(startupTimeout); // Gặp lỗi → hủy failsafe
             if (event.error === 'no-speech' || event.error === 'aborted') {
                 return;
             }
@@ -471,6 +474,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         rec.onend = () => {
+            clearTimeout(startupTimeout); // Đã ngắt → hủy failsafe
             clearTimeout(rec.speakingTimeout);
             isSpeaking = false;
 
@@ -483,12 +487,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Trình duyệt tự dừng (timeout) → tự khởi động lại qua một instance hoàn toàn mới!
                 recognition = null;
                 recordingState = 'starting';
+                
+                // Set lại failsafe cho quá trình restart
+                clearTimeout(startupTimeout);
+                startupTimeout = setTimeout(() => {
+                    if (recordingState === 'starting') {
+                        recordingState = 'idle';
+                        recognition = null;
+                        resetRecordingState();
+                        showStatus('Micro bị kẹt. Vui lòng bấm mở lại nhé!', true);
+                    }
+                }, 3500);
+
                 setTimeout(() => {
                     if (recordingState === 'starting') {
                         try {
                             recognition = createRecognition(lang);
                             recognition.start();
                         } catch (e) {
+                            clearTimeout(startupTimeout);
                             recordingState = 'idle';
                             recognition = null;
                             resetRecordingState();
@@ -544,7 +561,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const startListening = (mode) => {
         if (!SpeechRecognition) {
-            showStatus('Trình duyệt không hỗ trợ thu âm', true);
+            showStatus('Thiết bị/Trình duyệt này không hỗ trợ thu âm giọng nói!', true);
             return;
         }
 
@@ -586,6 +603,20 @@ document.addEventListener('DOMContentLoaded', () => {
         recordingState = 'starting';
         isSpeaking = false;
 
+        // Failsafe khởi động 3.5 giây để tránh bị kẹt nếu trình duyệt chặn hoặc đơ mic
+        clearTimeout(startupTimeout);
+        startupTimeout = setTimeout(() => {
+            if (recordingState === 'starting') {
+                recordingState = 'idle';
+                if (recognition) {
+                    try { recognition.abort(); } catch(e) {}
+                    recognition = null;
+                }
+                resetRecordingState();
+                showStatus('Không mở được mic. Hãy dùng Chrome/Safari và cấp quyền micro!', true);
+            }
+        }, 3500);
+
         const lang = mode === 'A' ? langA.value : langB.value;
         recognition = createRecognition(lang);
 
@@ -603,9 +634,11 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             recognition.start();
         } catch(e) {
+            clearTimeout(startupTimeout);
             recordingState = 'idle';
             recognition = null;
             resetRecordingState();
+            showStatus('Lỗi micro. Vui lòng cấp quyền micro cho trang web!', true);
             console.log("Không khởi tạo được SpeechRecognition:", e);
         }
     };
