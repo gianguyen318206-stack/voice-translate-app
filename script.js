@@ -74,9 +74,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (!waveformStream) {
             try {
-                waveformStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                // Thêm cấu hình tắt lọc tiếng ồn để tránh HĐH tự động giảm âm lượng (ducking)
+                waveformStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } 
+                });
                 source = audioCtx.createMediaStreamSource(waveformStream);
-                analyser = audioCtx.createAnalyser();
+                if (!analyser) analyser = audioCtx.createAnalyser();
                 analyser.fftSize = 256;
                 source.connect(analyser);
             } catch (err) {
@@ -110,6 +113,17 @@ document.addEventListener('DOMContentLoaded', () => {
     function stopWaveform() {
         if (drawVisual) cancelAnimationFrame(drawVisual);
         canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // QUAN TRỌNG: Phải tắt hẳn micro để hệ điều hành không bị nhầm là đang gọi điện thoại
+        // Từ đó khôi phục lại âm lượng loa ngoài ở mức tối đa (không bị ducking)
+        if (waveformStream) {
+            waveformStream.getTracks().forEach(track => track.stop());
+            waveformStream = null;
+        }
+        if (source) {
+            source.disconnect();
+            source = null;
+        }
     }
 
     // --- API DỊCH VÀ ĐỌC ---
@@ -223,8 +237,9 @@ document.addEventListener('DOMContentLoaded', () => {
         return chunks.filter(c => c.length > 0);
     }
 
-    // Global audio element to bypass iOS autoplay restrictions
+    // Global audio elements to bypass iOS autoplay restrictions
     const googleTTSAudio = new Audio();
+    const googleTTSAudio2 = new Audio(); // Kênh đôi để khuếch đại âm lượng to hơn (Dual-channel boost)
 
     // Play via Google Translate TTS (better quality, natural female voice)
     function playGoogleTTS(text, langCode) {
@@ -234,10 +249,15 @@ document.addEventListener('DOMContentLoaded', () => {
             function next() {
                 if (i >= chunks.length) { showStatus('Sẵn sàng'); resolve(); return; }
                 const url = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${langCode}&q=${encodeURIComponent(chunks[i])}`;
+                
                 googleTTSAudio.src = url;
+                googleTTSAudio2.src = url; // Nạp cùng URL
+                
                 googleTTSAudio.onended = () => { i++; next(); };
                 googleTTSAudio.onerror = () => reject(new Error('Google TTS fail'));
+                
                 googleTTSAudio.play().catch(reject);
+                googleTTSAudio2.play().catch(() => {}); // Phát đồng thời để tạo hiệu ứng âm thanh to hơn (+3dB)
             }
             next();
         });
@@ -327,14 +347,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition = SpeechRecognition ? new SpeechRecognition() : null;
     if (recognition) {
-        recognition.continuous = false;
-        recognition.interimResults = false;
+        recognition.continuous = true;       // KHÔNG tự dừng khi im lặng
+        recognition.interimResults = true;   // Hiển thị chữ realtime khi đang nói
     }
 
-    let currentMode = null; 
+    let currentMode = null;
+    let accumulatedTranscript = '';  // Tích lũy toàn bộ lời nói
+    let manualStop = false;         // Cờ: người dùng chủ động bấm dừng
+    let isRecording = false;        // Trạng thái đang thu âm
 
     if (recognition) {
         recognition.onstart = () => {
+            isRecording = true;
             if (currentMode === 'A') {
                 btnA.classList.add('active');
                 textA.textContent = 'Đang nghe bạn nói...';
@@ -344,47 +368,102 @@ document.addEventListener('DOMContentLoaded', () => {
                 textB.textContent = 'Đang nghe đối tác...';
                 startWaveform('#f43f5e');
             }
-            showStatus('Đang thu âm...');
+            showStatus('🔴 Đang thu âm — Bấm lần nữa để dừng');
         };
 
-        recognition.onresult = async (event) => {
-            const transcript = event.results[0][0].transcript;
-            
+        // Hiển thị chữ realtime và tích lũy kết quả cuối cùng
+        recognition.onresult = (event) => {
+            let finalText = accumulatedTranscript;
+            let interimText = '';
+
+            for (let i = 0; i < event.results.length; i++) {
+                const result = event.results[i];
+                if (result.isFinal) {
+                    // Câu đã xác nhận xong → tích lũy
+                    // Chỉ thêm nếu chưa có trong accumulatedTranscript (tránh trùng)
+                    const newText = result[0].transcript;
+                    if (!accumulatedTranscript.includes(newText.trim())) {
+                        accumulatedTranscript += (accumulatedTranscript ? ' ' : '') + newText.trim();
+                    }
+                    finalText = accumulatedTranscript;
+                } else {
+                    // Đang nói dở → hiển thị tạm (chữ nhạt)
+                    interimText += result[0].transcript;
+                }
+            }
+
+            // Hiển thị lên màn hình
+            const displayText = finalText + (interimText ? ' ' + interimText : '');
             if (currentMode === 'A') {
-                textA.textContent = transcript;
-                textB.textContent = 'Đang dịch...';
-                showStatus('Đang xử lý...');
-                const translated = await translateAPI(transcript, langA.value, langB.value);
-                textB.textContent = translated;
-                
-                addHistory(transcript, labelA.textContent, translated, labelB.textContent);
-                playAudio(translated, langB.value);
+                textA.textContent = displayText || 'Đang nghe bạn nói...';
             } else {
-                textB.textContent = transcript;
-                textA.textContent = 'Đang dịch...';
-                showStatus('Đang xử lý...');
-                const translated = await translateAPI(transcript, langB.value, langA.value);
-                textA.textContent = translated;
-                
-                addHistory(transcript, labelB.textContent, translated, labelA.textContent);
-                playAudio(translated, langA.value);
+                textB.textContent = displayText || 'Đang nghe đối tác...';
             }
         };
 
         recognition.onerror = (event) => {
+            // Lỗi 'no-speech' hoặc 'aborted' → bỏ qua, tự khởi động lại
+            if (event.error === 'no-speech' || event.error === 'aborted') {
+                return; // onend sẽ tự restart
+            }
             const errorMessages = {
-                'no-speech':          'Không nghe thấy giọng nói, thử lại nhé!',
                 'audio-capture':      'Không truy cập được micro',
                 'not-allowed':        'Hãy cho phép truy cập micro trong cài đặt',
                 'network':            'Lỗi mạng, kiểm tra kết nối internet',
-                'aborted':            '',
                 'service-not-allowed':'Trình duyệt không hỗ trợ thu âm'
             };
             const msg = errorMessages[event.error] || `Lỗi: ${event.error}`;
-            if (msg) showStatus(msg, true);
+            showStatus(msg, true);
+            manualStop = true; // Lỗi nghiêm trọng → dừng hẳn
             resetRecordingState();
         };
-        recognition.onend = () => resetRecordingState();
+
+        recognition.onend = () => {
+            if (manualStop) {
+                // Người dùng chủ động bấm dừng → xử lý bản dịch
+                isRecording = false;
+                resetRecordingState();
+                processAccumulatedText();
+            } else if (isRecording) {
+                // Trình duyệt tự dừng (timeout/no-speech) → tự khởi động lại
+                try {
+                    recognition.start();
+                } catch (e) {
+                    isRecording = false;
+                    resetRecordingState();
+                    processAccumulatedText();
+                }
+            }
+        };
+    }
+
+    // Xử lý bản dịch sau khi dừng thu âm
+    async function processAccumulatedText() {
+        const transcript = accumulatedTranscript.trim();
+        accumulatedTranscript = ''; // Reset cho lần sau
+
+        if (!transcript) {
+            showStatus('Không nghe thấy giọng nói, thử lại nhé!', true);
+            return;
+        }
+
+        if (currentMode === 'A') {
+            textA.textContent = transcript;
+            textB.textContent = 'Đang dịch...';
+            showStatus('Đang xử lý...');
+            const translated = await translateAPI(transcript, langA.value, langB.value);
+            textB.textContent = translated;
+            addHistory(transcript, labelA.textContent, translated, labelB.textContent);
+            playAudio(translated, langB.value);
+        } else {
+            textB.textContent = transcript;
+            textA.textContent = 'Đang dịch...';
+            showStatus('Đang xử lý...');
+            const translated = await translateAPI(transcript, langB.value, langA.value);
+            textA.textContent = translated;
+            addHistory(transcript, labelB.textContent, translated, labelA.textContent);
+            playAudio(translated, langA.value);
+        }
     }
 
     function resetRecordingState() {
@@ -398,17 +477,27 @@ document.addEventListener('DOMContentLoaded', () => {
             showStatus('Trình duyệt không hỗ trợ thu âm', true);
             return;
         }
-        if (btnA.classList.contains('active') || btnB.classList.contains('active')) {
+
+        // Đang thu âm → bấm lần nữa = DỪNG
+        if (isRecording) {
+            manualStop = true;
             recognition.stop();
             return;
         }
+
+        // Bắt đầu thu âm mới
         currentMode = mode;
+        accumulatedTranscript = '';
+        manualStop = false;
         recognition.lang = mode === 'A' ? langA.value : langB.value;
 
         if (isIOS) {
             // Prime global Audio so Google TTS can play asynchronously later
-            googleTTSAudio.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+            const silence = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+            googleTTSAudio.src = silence;
             googleTTSAudio.play().catch(()=>{});
+            googleTTSAudio2.src = silence;
+            googleTTSAudio2.play().catch(()=>{});
 
             // iOS FIX: prime speechSynthesis FIRST (inside user gesture),
             // then start recognition AFTER primer finishes.
