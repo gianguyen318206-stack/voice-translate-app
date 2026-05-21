@@ -75,7 +75,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const canvas = document.getElementById('waveform');
     const canvasCtx = canvas.getContext('2d');
     let drawVisual = null;
-    let isSpeaking = false; // Cờ theo dõi khi có âm thanh truyền vào mic
 
     function startWaveform(color) {
         canvas.width = canvas.offsetWidth;
@@ -94,14 +93,9 @@ document.addEventListener('DOMContentLoaded', () => {
             canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
             
             for (let i = 0; i < barCount; i++) {
-                if (isSpeaking) {
-                    // Cập nhật target ngẫu nhiên (tạo hiệu ứng nhịp sống động khi có giọng nói)
-                    if (Math.random() < 0.15) {
-                        barTargets[i] = Math.random() * canvas.height * 0.7 + 4;
-                    }
-                } else {
-                    // Sóng phẳng nhẹ nhàng khi im lặng
-                    barTargets[i] = 2; 
+                // Tạo hiệu ứng sóng âm động sôi nổi trong lúc thu âm
+                if (Math.random() < 0.15) {
+                    barTargets[i] = Math.random() * canvas.height * 0.7 + 4;
                 }
                 
                 // Chuyển động mượt về target
@@ -112,7 +106,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const y = (canvas.height - barHeight) / 2;
                 
                 canvasCtx.fillStyle = color;
-                canvasCtx.globalAlpha = isSpeaking ? (0.6 + (barHeight / canvas.height) * 0.4) : 0.15;
+                canvasCtx.globalAlpha = 0.6 + (barHeight / canvas.height) * 0.4;
                 canvasCtx.beginPath();
                 canvasCtx.roundRect(x, y, barWidth, barHeight, 2);
                 canvasCtx.fill();
@@ -126,7 +120,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (drawVisual) cancelAnimationFrame(drawVisual);
         drawVisual = null;
         canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
-        isSpeaking = false; // Reset cờ âm thanh
     }
 
     // --- API DỊCH VÀ ĐỌC ---
@@ -401,7 +394,6 @@ document.addEventListener('DOMContentLoaded', () => {
         rec.onstart = () => {
             clearTimeout(startupTimeout); // Đã kết nối thành công → hủy failsafe
             recordingState = 'recording';
-            isSpeaking = false; // Mặc định ban đầu chưa nói
             if (currentMode === 'A') {
                 btnA.classList.add('active');
                 textA.textContent = 'Đang nghe bạn nói...';
@@ -414,23 +406,7 @@ document.addEventListener('DOMContentLoaded', () => {
             showStatus('🔴 Đang thu âm — Bấm lần nữa để dừng');
         };
 
-        // Kích hoạt sóng âm chỉ khi thực sự phát hiện tiếng động/tiếng nói
-        rec.onsoundstart = () => { isSpeaking = true; };
-        rec.onspeechstart = () => { isSpeaking = true; };
-        
-        // Trở về trạng thái tĩnh khi hết tiếng
-        rec.onsoundend = () => { isSpeaking = false; };
-        rec.onspeechend = () => { isSpeaking = false; };
-
         rec.onresult = (event) => {
-            isSpeaking = true; // Chắc chắn có tiếng nói khi có kết quả trả về
-            
-            // Tự động tắt trạng thái sóng động sau 1.2s nếu không có kết quả mới
-            clearTimeout(rec.speakingTimeout);
-            rec.speakingTimeout = setTimeout(() => {
-                isSpeaking = false;
-            }, 1200);
-
             let finalText = accumulatedTranscript;
             let interimText = '';
 
@@ -475,8 +451,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         rec.onend = () => {
             clearTimeout(startupTimeout); // Đã ngắt → hủy failsafe
-            clearTimeout(rec.speakingTimeout);
-            isSpeaking = false;
 
             if (recordingState === 'stopping') {
                 recordingState = 'idle';
@@ -601,7 +575,6 @@ document.addEventListener('DOMContentLoaded', () => {
         currentMode = mode;
         accumulatedTranscript = '';
         recordingState = 'starting';
-        isSpeaking = false;
 
         // Failsafe khởi động 3.5 giây để tránh bị kẹt nếu trình duyệt chặn hoặc đơ mic
         clearTimeout(startupTimeout);
